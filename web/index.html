@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="main.css">
+</head>
+<body>
+    <main id="app" class="app is-hidden">
+        <section class="panel panel-left">
+            <header class="panel-header">
+                <div>
+                    <img src="logo.png" class="panel-logo" alt="Logo">
+                    <h1 class="app-title-custom"><span class="title-purple">Pinel</span> <span class="title-white">Animated</span></h1>
+                </div>
+                <button class="icon-button" data-action="close" data-i18n-title="close" data-icon="close"></button>
+            </header>
+
+            <div class="field">
+                <label for="animationPreset" data-i18n="preset"></label>
+                <select id="animationPreset"></select>
+            </div>
+
+            <div class="grid grid-2">
+                <label class="field">
+                    <span data-i18n="dict"></span>
+                    <input id="animDict" spellcheck="false" placeholder="anim@dict">
+                </label>
+                <label class="field">
+                    <span data-i18n="anim"></span>
+                    <input id="animName" spellcheck="false" placeholder="clip_name">
+                </label>
+            </div>
+
+            <div class="grid grid-3">
+                <label class="field">
+                    <span data-i18n="flag"></span>
+                    <input id="animFlag" type="number" step="1">
+                </label>
+                <label class="field">
+                    <span data-i18n="blendIn"></span>
+                    <input id="blendIn" type="number" step="0.5">
+                </label>
+                <label class="field">
+                    <span data-i18n="blendOut"></span>
+                    <input id="blendOut" type="number" step="0.5">
+                </label>
+            </div>
+
+            <div class="grid grid-2">
+                <label class="field">
+                    <span data-i18n="duration"></span>
+                    <input id="duration" type="number" step="1">
+                </label>
+                <label class="field">
+                    <span data-i18n="playback"></span>
+                    <input id="playbackRate" type="number" step="0.05">
+                </label>
+            </div>
+
+            <div class="field">
+                <span data-i18n="quickFlags"></span>
+                <div id="flagButtons" class="segmented"></div>
+            </div>
+
+            <div class="actions animation-actions">
+                <button class="primary" data-action="playAnimation" data-i18n="play"></button>
+                <button data-action="pauseAnimation" data-i18n="pause"></button>
+                <button data-action="stopAnimation" data-i18n="stop"></button>
+                <button data-action="clearAll" data-i18n="clear"></button>
+            </div>
+
+            <div class="export-box">
+                <div class="export-head">
+                    <span data-i18n="generatedConfig"></span>
+                    <div>
+                        <button class="small" data-action="generate" data-i18n="generate"></button>
+                        <button class="small" data-action="copyLua" data-i18n="copy"></button>
+                    </div>
+                </div>
+                <textarea id="output" spellcheck="false" readonly></textarea>
+                <button class="full" data-action="saveConfig" data-i18n="saveJson"></button>
+            </div>
+
+            <div class="debug-box">
+                <div class="debug-head" data-i18n="debug"></div>
+                <div id="debugLog" class="debug-log"></div>
+            </div>
+        </section>
+
+        <div class="camera-target-container">
+            <button class="camera-target-btn" data-target="head" data-i18n-title="camHead">
+                <i class="fa-solid fa-face-smile"></i>
+            </button>
+            <button class="camera-target-btn active" data-target="waist" data-i18n-title="camWaist">
+                <i class="fa-solid fa-shirt"></i>
+            </button>
+            <button class="camera-target-btn" data-target="foot" data-i18n-title="camFoot">
+                <i class="fa-solid fa-shoe-prints"></i>
+            </button>
+        </div>
+
+        <section class="panel panel-right">
+            <header class="panel-header">
+                <div>
+                    <p class="eyebrow" data-i18n="propAttach"></p>
+                    <h2 id="propStatus"></h2>
+                </div>
+                <button id="gizmoState" class="status-pill"></button>
+            </header>
+
+            <div class="field">
+                <label for="propPreset" data-i18n="prop"></label>
+                <select id="propPreset"></select>
+            </div>
+
+            <div class="field">
+                <label for="propModel" data-i18n="customModel"></label>
+                <input id="propModel" spellcheck="false" placeholder="prop_cs_burger_01">
+            </div>
+
+            <div class="actions">
+                <button class="primary" data-action="spawnProp" data-i18n="spawn"></button>
+                <button data-action="deleteProp" data-i18n="delete"></button>
+            </div>
+
+            <div class="grid grid-2">
+                <label class="field">
+                    <span data-i18n="bone"></span>
+                    <select id="bonePreset"></select>
+                </label>
+                <label class="field">
+                    <span data-i18n="boneId"></span>
+                    <input id="boneId" type="number" step="1">
+                </label>
+            </div>
+
+            <div class="field">
+                <label for="rotationOrder" data-i18n="rotationOrder"></label>
+                <select id="rotationOrder">
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                </select>
+            </div>
+
+            <div class="coords">
+                <div class="coords-head">
+                    <span data-i18n="position"></span>
+                    <select id="posStep"></select>
+                </div>
+                <div class="axis-grid" data-group="offset">
+                    <button data-axis="x" data-dir="-1"></button>
+                    <input id="offsetX" data-axis-input="offset.x" type="number" step="0.001">
+                    <button data-axis="x" data-dir="1"></button>
+                    <button data-axis="y" data-dir="-1"></button>
+                    <input id="offsetY" data-axis-input="offset.y" type="number" step="0.001">
+                    <button data-axis="y" data-dir="1"></button>
+                    <button data-axis="z" data-dir="-1"></button>
+                    <input id="offsetZ" data-axis-input="offset.z" type="number" step="0.001">
+                    <button data-axis="z" data-dir="1"></button>
+                </div>
+            </div>
+
+            <div class="coords">
+                <div class="coords-head">
+                    <span data-i18n="rotation"></span>
+                    <select id="rotStep"></select>
+                </div>
+                <div class="axis-grid" data-group="rotation">
+                    <button data-axis="x" data-dir="-1"></button>
+                    <input id="rotX" data-axis-input="rotation.x" type="number" step="0.1">
+                    <button data-axis="x" data-dir="1"></button>
+                    <button data-axis="y" data-dir="-1"></button>
+                    <input id="rotY" data-axis-input="rotation.y" type="number" step="0.1">
+                    <button data-axis="y" data-dir="1"></button>
+                    <button data-axis="z" data-dir="-1"></button>
+                    <input id="rotZ" data-axis-input="rotation.z" type="number" step="0.1">
+                    <button data-axis="z" data-dir="1"></button>
+                </div>
+            </div>
+
+            <div class="actions stack">
+                <button class="primary" data-action="toggleGizmo" data-i18n="editWithGizmo"></button>
+                <button data-action="captureGizmo" data-i18n="captureCurrentPosition"></button>
+                <button data-action="resetTransform" data-i18n="resetOffsets"></button>
+            </div>
+
+            <footer class="hint">
+                <span data-i18n="backspaceHint"></span>
+            </footer>
+        </section>
+    </main>
+    <script src="main.js"></script>
+</body>
+</html>

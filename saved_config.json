@@ -1,0 +1,28 @@
+{
+    "savedAt": "2026-06-19T02:16:24Z",
+    "prop": {
+        "rotationOrder": 2,
+        "boneId": 57005,
+        "model": "p_amb_coffeecup_01",
+        "rotation": {
+            "x": -80,
+            "z": 10,
+            "y": 0
+        },
+        "offset": {
+            "x": 0.12,
+            "z": -0.02,
+            "y": 0.02
+        }
+    },
+    "animation": {
+        "duration": -1,
+        "playbackRate": 1,
+        "flag": 49,
+        "anim": "idle_c",
+        "blendOut": -8,
+        "blendIn": 8,
+        "dict": "amb@world_human_drinking@coffee@male@idle_a"
+    },
+    "lua": "{\n    dict = \"amb@world_human_drinking@coffee@male@idle_a\",\n    anim = \"idle_c\",\n    flags = 49,\n    props = {\n        {\n            model = \"p_amb_coffeecup_01\",\n            bone = 57005,\n            pos = vec3(0.1200, 0.0200, -0.0200),\n            rot = vec3(-80.000, 0.000, 10.000),\n            rotationOrder = 2,\n        },\n    },\n}"
+}

@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title></title>
+    <title>Forge Animated</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="main.css">
 </head>
@@ -12,11 +12,17 @@
         <section class="panel panel-left">
             <header class="panel-header">
                 <div>
-                    <img src="logo.png" class="panel-logo" alt="Logo">
-                    <h1 class="app-title-custom"><span class="title-purple">Pinel</span> <span class="title-white">Animated</span></h1>
+                    <img src="logo.png" class="panel-logo" alt="Forge">
+                    <h1 class="app-title-custom"><span class="title-purple">Forge</span> <span class="title-white">Animated</span></h1>
                 </div>
                 <button class="icon-button" data-action="close" data-i18n-title="close" data-icon="close"></button>
             </header>
+
+            <label class="field">
+                <span data-i18n="animationId"></span>
+                <input id="animationId" spellcheck="false" maxlength="64" placeholder="garrafa_dagua" required>
+                <small class="field-hint" data-i18n="animationIdHint"></small>
+            </label>
 
             <div class="field">
                 <label for="animationPreset" data-i18n="preset"></label>
@@ -70,6 +76,15 @@
                 <button data-action="pauseAnimation" data-i18n="pause"></button>
                 <button data-action="stopAnimation" data-i18n="stop"></button>
                 <button data-action="clearAll" data-i18n="clear"></button>
+            </div>
+
+            <div class="timeline-box">
+                <div class="timeline-head">
+                    <span data-i18n="timeline"></span>
+                    <output id="timelineValue">00:00.00 / 00:00.00</output>
+                </div>
+                <input id="animationTimeline" class="timeline-range" type="range" min="0" max="1000" step="1" value="0">
+                <small data-i18n="timelineHint"></small>
             </div>
 
             <div class="export-box">

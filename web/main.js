@@ -10,6 +10,9 @@ let currentAnimations = [];
 let currentProps = [];
 let currentBones = [];
 let currentGizmoActive = false;
+let currentTimelineDuration = 0;
+let timelineDragging = false;
+let timelineSeekTimer = null;
 
 async function post(action, payload = {}) {
     try {
@@ -50,6 +53,45 @@ function luaString(value) {
 
 function fixed(value, decimals) {
     return Number(value || 0).toFixed(decimals);
+}
+
+function formatTimelineTime(seconds) {
+    const safe = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(safe / 60);
+    const remaining = safe - (minutes * 60);
+    return `${String(minutes).padStart(2, "0")}:${remaining.toFixed(2).padStart(5, "0")}`;
+}
+
+function renderTimeline(phase, duration, forceSlider = false) {
+    const normalized = Math.max(0, Math.min(1, Number(phase) || 0));
+    currentTimelineDuration = Math.max(0, Number(duration) || currentTimelineDuration || 0);
+
+    const slider = document.getElementById("animationTimeline");
+    if (slider && (!timelineDragging || forceSlider)) {
+        slider.value = String(Math.round(normalized * 1000));
+    }
+
+    const output = document.getElementById("timelineValue");
+    if (output) {
+        output.textContent = `${formatTimelineTime(normalized * currentTimelineDuration)} / ${formatTimelineTime(currentTimelineDuration)}`;
+    }
+}
+
+function seekTimeline(phase, final = false) {
+    const normalized = Math.max(0, Math.min(1, Number(phase) || 0));
+    renderTimeline(normalized, currentTimelineDuration, true);
+
+    if (timelineSeekTimer) {
+        clearTimeout(timelineSeekTimer);
+        timelineSeekTimer = null;
+    }
+
+    const send = () => post("seekAnimation", { phase: normalized });
+    if (final) {
+        send();
+    } else {
+        timelineSeekTimer = setTimeout(send, 40);
+    }
 }
 
 function translate(translations) {
@@ -119,6 +161,10 @@ function setupAnimationPreset(animations) {
         setValue("blendOut", animation.blendOut ?? currentDefaults.blendOut ?? 8.0);
         setValue("duration", animation.duration ?? currentDefaults.duration ?? -1);
         setValue("playbackRate", animation.playbackRate ?? currentDefaults.playbackRate ?? 0.0);
+        const idInput = document.getElementById("animationId");
+        if (idInput && !idInput.value.trim()) {
+            idInput.value = normalizeAnimationId(animation.labelId || animation.name || "animation");
+        }
         addDebugLog(`nui:animationPreset ${animation.labelId || animation.name || select.value}`);
     };
 }
@@ -285,6 +331,22 @@ function hideApp() {
     app.classList.add("is-hidden");
 }
 
+function normalizeAnimationId(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^a-z0-9_-]/g, "")
+        .slice(0, 64);
+}
+
+function readAnimationId() {
+    const input = document.getElementById("animationId");
+    const id = normalizeAnimationId(input?.value);
+    if (input) input.value = id;
+    return id;
+}
+
 function readAnimationPayload() {
     return {
         dict: document.getElementById("animDict")?.value || "",
@@ -321,7 +383,9 @@ function generateLuaConfig() {
     const output = document.getElementById("output");
     if (!output) return;
 
+    const id = readAnimationId();
     output.value = `{
+    id = "${luaString(id)}",
     dict = "${luaString(anim.dict)}",
     anim = "${luaString(anim.anim)}",
     flags = ${anim.flag},
@@ -400,6 +464,8 @@ window.addEventListener("message", (event) => {
         }
     } else if (payload.action === "debugLog") {
         addDebugLog(payload.message || "");
+    } else if (payload.action === "animationTimeline") {
+        renderTimeline(payload.phase, payload.durationSeconds);
     } else if (payload.action === "setGizmoState") {
         currentGizmoActive = payload.active === true;
         updateStatus();
@@ -428,6 +494,25 @@ document.addEventListener("keydown", (event) => {
         postAndDebug("close", { reason: "escape" });
     }
 });
+
+const animationTimeline = document.getElementById("animationTimeline");
+if (animationTimeline) {
+    animationTimeline.addEventListener("pointerdown", () => {
+        timelineDragging = true;
+    });
+    animationTimeline.addEventListener("input", () => {
+        timelineDragging = true;
+        seekTimeline(Number(animationTimeline.value) / 1000, false);
+    });
+    animationTimeline.addEventListener("change", () => {
+        seekTimeline(Number(animationTimeline.value) / 1000, true);
+        timelineDragging = false;
+    });
+    animationTimeline.addEventListener("pointerup", () => {
+        seekTimeline(Number(animationTimeline.value) / 1000, true);
+        timelineDragging = false;
+    });
+}
 
 document.querySelectorAll("[data-action='playAnimation']").forEach((element) => {
     element.addEventListener("click", () => postAndDebug("playAnimation", readAnimationPayload()));
@@ -487,10 +572,20 @@ document.querySelectorAll("[data-action='copyLua']").forEach((element) => {
 
 document.querySelectorAll("[data-action='saveConfig']").forEach((element) => {
     element.addEventListener("click", async () => {
+        const id = readAnimationId();
+        const idInput = document.getElementById("animationId");
+        if (!id) {
+            idInput?.focus();
+            addDebugLog(text("animationIdRequired", "Enter a valid ID before saving."));
+            return;
+        }
+
+        generateLuaConfig();
+        const prop = readPropPayload();
         const result = await postAndDebug("saveConfig", {
+            id,
             animation: readAnimationPayload(),
-            prop: readPropPayload(),
-            lua: ensureGeneratedConfig(),
+            props: prop.model ? [prop] : [],
         });
 
         addDebugLog(text(result?.ok ? "saveSuccess" : "saveFailed", result?.ok ? "Config saved." : "Save failed."));

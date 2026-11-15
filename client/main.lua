@@ -8,6 +8,14 @@ local saveRequestId = 0
 local pendingSaveCallbacks = {}
 local cameraTargetDummy = nil
 local currentCameraTarget = "waist"
+local editorSession = 0
+local animationRequest = 0
+local movementTesting = false
+local stopMovementTest
+local scene = {}
+local sceneOverrides = {}
+local bonePicker
+local propOperation
 local currentAnimation = {
     dict = nil,
     anim = nil,
@@ -15,7 +23,7 @@ local currentAnimation = {
     blendIn = 8.0,
     blendOut = 8.0,
     duration = -1,
-    playbackRate = 0.0,
+    playbackRate = 1.0,
     paused = false,
     pausedTime = 0.0,
     lastTime = 0.0,
@@ -33,14 +41,24 @@ local savedPlayback = {
     props = {},
 }
 
-local propData = {
-    entity = nil,
-    model = nil,
-    boneId = nil,
-    offset = vector3(0.0, 0.0, 0.0),
-    rot = vector3(0.0, 0.0, 0.0),
-    rotOrder = 2,
-}
+local editorProps = {}
+local propData = {}
+local nextPropId = 0
+
+local function plainVector(value)
+    return { x = value.x, y = value.y, z = value.z }
+end
+
+local function sendEditorProps(changed)
+    local props = {}
+    for i, prop in ipairs(editorProps) do
+        props[i] = {
+            id = prop.id, model = prop.model, boneId = prop.boneId, rotationOrder = prop.rotOrder,
+            offset = plainVector(prop.offset), rotation = plainVector(prop.rot), visible = prop.visible,
+        }
+    end
+    SendNUIMessage({ action = "editorProps", props = props, selectedId = propData.id, changed = changed == true })
+end
 
 local function bridgeDebug(level, message)
     if not pr_lib or not pr_lib.debug then return end
@@ -178,6 +196,88 @@ local translationKeys = {
     "closed",
     "keybindOpenMenu",
     "keybindOpened",
+    "animationLabel",
+    "history",
+    "restoreLast",
+    "refreshCatalog",
+    "savedAnimations",
+    "restoreSaved",
+    "chooseSaved",
+    "recent",
+    "catalog",
+    "frameBack",
+    "frameForward",
+    "testAnimation",
+    "testHint",
+    "testUnavailable",
+    "scene",
+    "background",
+    "backgroundColor",
+    "worldScene",
+    "greenScene",
+    "blueScene",
+    "neutralScene",
+    "sceneHour",
+    "sceneWeather",
+    "sunny",
+    "clearSky",
+    "clouds",
+    "overcast",
+    "rain",
+    "fog",
+    "exportFormat",
+    "exportValues",
+    "exportScope",
+    "allProps",
+    "selectedProp",
+    "attachedProps",
+    "addProp",
+    "replaceProp",
+    "hideProp",
+    "showProp",
+    "hiddenProp",
+    "boneRegion",
+    "bodyBones",
+    "leftHandBones",
+    "rightHandBones",
+    "allBones",
+    "leftHandShort",
+    "rightHandShort",
+    "searchBone",
+    "pickBone",
+    "preserveRotation",
+    "scullyRequired",
+    "scullyPropFile",
+    "scullyGeneralFile",
+    "scullyMapping",
+    "editorError",
+    "busy",
+    "animation_unavailable",
+    "invalidModel",
+    "invalidBone",
+    "modelLoadFailed",
+    "propLimit",
+    "rotationFailed",
+    "cameraUnavailable",
+    "boneThumb",
+    "boneIndex",
+    "boneMiddle",
+    "boneRing",
+    "boneLittle",
+    "bonePelvis",
+    "boneNeck",
+    "boneLeftClavicle",
+    "boneRightClavicle",
+    "boneLeftUpperArm",
+    "boneRightUpperArm",
+    "boneLeftForearm",
+    "boneRightForearm",
+    "boneLeftThigh",
+    "boneRightThigh",
+    "boneLeftCalf",
+    "boneRightCalf",
+    "boneLeftToe",
+    "boneRightToe",
 }
 
 
@@ -212,13 +312,7 @@ local function sendVisible(visible)
         bones = Config.Bones or {},
         nudgeSteps = Config.NudgeSteps or {},
         defaultProp = Config.DefaultProp or {},
-    })
-end
-
-local function sendPropStatus(status)
-    SendNUIMessage({
-        action = "propStatus",
-        status = status,
+        maxProps = Config.MaxEditorProps,
     })
 end
 
@@ -239,12 +333,17 @@ local function startControlsThread()
         }
 
         while isOpen do
-            for i = 1, #controls do
-                DisableControlAction(0, controls[i], true)
+            if movementTesting then
+                local exit = Config.CloseKey or 177
+                DisableControlAction(0, exit, true)
+                if IsDisabledControlJustPressed(0, exit) or IsEntityDead(PlayerPedId()) then stopMovementTest() end
+            elseif not gizmoActive then
+                for i = 1, #controls do
+                    DisableControlAction(0, controls[i], true)
+                end
+                DisablePlayerFiring(PlayerId(), true)
+                SetPauseMenuActive(false)
             end
-
-            DisablePlayerFiring(PlayerId(), true)
-            SetPauseMenuActive(false)
             Wait(0)
         end
 
@@ -263,10 +362,9 @@ local function getCameraBoneId(target)
         return 31086
     end
 
-    if target == "foot" then
-        return 14201
-    end
-
+    if target == "foot" then return 14201 end
+    if target == "leftHand" then return 18905 end
+    if target == "rightHand" then return 57005 end
     return 24818
 end
 
@@ -289,7 +387,7 @@ local function deleteCameraTarget()
 end
 
 local function createCameraTarget(target)
-    local ped = PlayerPedId()
+    local ped, session = PlayerPedId(), editorSession
 
     if not ped or ped == 0 or not DoesEntityExist(ped) then
         bridgeDebug("warn", "[pr_animateConfig] Camera sem ped valido, usando fallback indisponivel.")
@@ -300,6 +398,7 @@ local function createCameraTarget(target)
 
     local boneId = getCameraBoneId(target)
     local boneIndex = GetPedBoneIndex(ped, boneId)
+    if boneIndex < 0 then return ped end
     local coords = GetWorldPositionOfEntityBone(ped, boneIndex)
     local modelHash = GetHashKey("prop_ld_test_01")
 
@@ -308,13 +407,17 @@ local function createCameraTarget(target)
     local startedAt = GetGameTimer()
     while not HasModelLoaded(modelHash) do
         Wait(0)
-
+        if session ~= editorSession or movementTesting then
+            SetModelAsNoLongerNeeded(modelHash)
+            return nil
+        end
         if GetGameTimer() - startedAt > 1500 then
             bridgeDebug("warn", "[pr_animateConfig] Dummy da camera nao carregou, usando ped como alvo.")
             debugAction("camera:dummy:fallback", {
                 target = target,
                 reason = "model_timeout",
             }, "warn")
+            SetModelAsNoLongerNeeded(modelHash)
             return ped
         end
     end
@@ -419,67 +522,22 @@ local function vectorFromData(data, fallback)
     )
 end
 
-local function deletePropEntity()
-    if propData.entity and DoesEntityExist(propData.entity) then
-        debugAction("prop:delete", {
-            entity = propData.entity,
-            model = propData.model,
-        })
-        deleteEntity(propData.entity)
-    end
-
-    propData.entity = nil
-    sendPropStatus("none")
+local function clearEditorProps()
+    for _, prop in ipairs(editorProps) do deleteEntity(prop.entity) end
+    editorProps, propData = {}, {}
 end
 
-local function attachEntityToPedBone()
+local function attachEntityToPedBone(prop)
+    prop = prop or propData
     local ped = PlayerPedId()
+    if not prop.entity or not DoesEntityExist(prop.entity) or not DoesEntityExist(ped) then return false end
 
-    if not propData.entity or not DoesEntityExist(propData.entity) then
-        return false
-    end
+    local boneIndex = GetPedBoneIndex(ped, prop.boneId)
+    if boneIndex < 0 then return false end
 
-    if not propData.boneId then
-        return false
-    end
-
-    local boneIndex = GetPedBoneIndex(ped, propData.boneId)
-
-    debugAction("prop:attach", {
-        entity = propData.entity,
-        boneId = propData.boneId,
-        boneIndex = boneIndex,
-        rotationOrder = propData.rotOrder,
-        offset = {
-            x = propData.offset.x,
-            y = propData.offset.y,
-            z = propData.offset.z,
-        },
-        rotation = {
-            x = propData.rot.x,
-            y = propData.rot.y,
-            z = propData.rot.z,
-        },
-    })
-
-    AttachEntityToEntity(
-        propData.entity,
-        ped,
-        boneIndex,
-        propData.offset.x,
-        propData.offset.y,
-        propData.offset.z,
-        propData.rot.x,
-        propData.rot.y,
-        propData.rot.z,
-        true,
-        true,
-        false,
-        true,
-        propData.rotOrder,
-        true
-    )
-
+    AttachEntityToEntity(prop.entity, ped, boneIndex,
+        prop.offset.x, prop.offset.y, prop.offset.z, prop.rot.x, prop.rot.y, prop.rot.z,
+        true, true, false, true, prop.rotOrder, true)
     return true
 end
 
@@ -497,6 +555,7 @@ end
 local function sendCurrentOffsets()
     SendNUIMessage({
         action = "updateOffsets",
+        id = propData.id,
         offset = {
             x = propData.offset.x,
             y = propData.offset.y,
@@ -519,15 +578,18 @@ local function quaternionMultiply(ax, ay, az, aw, bx, by, bz, bw)
 end
 
 local function createBoneTransformAnchor()
-    local ped = PlayerPedId()
-    if not ped or ped == 0 or not DoesEntityExist(ped) or not propData.boneId then return nil end
+    local ped, session = PlayerPedId(), editorSession
+    if not DoesEntityExist(ped) or not propData.boneId then return nil end
 
     local modelHash = GetHashKey("prop_ld_test_01")
     RequestModel(modelHash)
     local startedAt = GetGameTimer()
     while not HasModelLoaded(modelHash) do
         Wait(0)
-        if GetGameTimer() - startedAt > 1500 then return nil end
+        if session ~= editorSession or GetGameTimer() - startedAt > 1500 then
+            SetModelAsNoLongerNeeded(modelHash)
+            return nil
+        end
     end
 
     local coords = GetEntityCoords(ped)
@@ -558,6 +620,10 @@ local function captureWorldTransformAsBoneOffset(sourceEntity, existingAnchor)
     local ownsAnchor = not anchor or not DoesEntityExist(anchor)
     if ownsAnchor then anchor = createBoneTransformAnchor() end
     if not anchor or not DoesEntityExist(anchor) then return false end
+    if not DoesEntityExist(entity) then
+        if ownsAnchor then deleteEntity(anchor) end
+        return false
+    end
 
     local coords = GetEntityCoords(entity)
     local offset = GetOffsetFromEntityGivenWorldCoords(anchor, coords.x, coords.y, coords.z)
@@ -600,16 +666,20 @@ local function syncGizmoHandleToProp(handle, entity)
     SetEntityQuaternion(handle, qx, qy, qz, qw)
 end
 local function restoreAnimationEditorFocus()
+    local session = editorSession
     Wait(125)
-    if not isOpen then return end
+    if not isOpen or session ~= editorSession or movementTesting then return end
 
     startEditorCamera(currentCameraTarget)
+    if not isOpen or session ~= editorSession or movementTesting then return end
     SetNuiFocus(true, true)
     if SetNuiFocusKeepInput then SetNuiFocusKeepInput(true) end
 end
 local function resetAll()
     debugAction("state:reset", {})
-    deletePropEntity()
+    animationRequest = animationRequest + 1
+    movementTesting, bonePicker, propOperation = false, nil, nil
+    clearEditorProps()
     ClearPedTasksImmediately(PlayerPedId())
 
     currentAnimation = {
@@ -619,7 +689,7 @@ local function resetAll()
         blendIn = 8.0,
         blendOut = 8.0,
         duration = -1,
-        playbackRate = 0.0,
+        playbackRate = 1.0,
         paused = false,
         pausedTime = 0.0,
         lastTime = 0.0,
@@ -628,11 +698,12 @@ local function resetAll()
         effectiveRate = 1.0,
     }
 
-    propData.model = nil
-    propData.boneId = nil
-    propData.offset = vector3(0.0, 0.0, 0.0)
-    propData.rot = vector3(0.0, 0.0, 0.0)
-    propData.rotOrder = 2
+end
+
+local function normalizePlaybackRate(value)
+    local rate = tonumber(value)
+    if rate and rate > 0.0 and rate <= 3.4028234e38 then return rate end
+    return 1.0
 end
 
 local function getCurrentAnimationDuration()
@@ -642,8 +713,17 @@ local function getCurrentAnimationDuration()
     return tonumber(duration) or 0.0
 end
 
+local function isPlaying(ped)
+    if not DoesEntityExist(ped) or not currentAnimation.dict or not currentAnimation.anim then return false end
+    local active = IsEntityPlayingAnim(ped, currentAnimation.dict, currentAnimation.anim, 3)
+    return active == true or active == 1
+end
+
 local function playCurrentAnimation()
+    animationRequest = animationRequest + 1
+    local request = animationRequest
     currentAnimation.paused = false
+    currentAnimation.startedAt = 0
     currentAnimation.pausedTime = 0.0
     currentAnimation.lastTime = 0.0
 
@@ -672,13 +752,13 @@ local function playCurrentAnimation()
     local startedAt = GetGameTimer()
     while not HasAnimDictLoaded(currentAnimation.dict) do
         Wait(0)
-
+        if not isOpen or request ~= animationRequest or PlayerPedId() ~= ped then return false, "cancelled" end
         if GetGameTimer() - startedAt > 5000 then
             bridgeDebug("error", ("[pr_animateConfig] Timeout animDict: %s"):format(tostring(currentAnimation.dict)))
             debugAction("anim:play:timeout", {
                 dict = currentAnimation.dict,
             }, "error")
-            return false
+            return false, "animation_unavailable"
         end
     end
 
@@ -714,6 +794,18 @@ local function playCurrentAnimation()
 
     return true
 end
+local function awaitEditorAnimation(ped, request)
+    local deadline = GetGameTimer() + 1000
+    while isOpen and request == animationRequest and PlayerPedId() == ped
+        and not isPlaying(ped) and GetGameTimer() < deadline
+    do
+        Wait(0)
+    end
+    if not isOpen or request ~= animationRequest or PlayerPedId() ~= ped then return false, "cancelled" end
+    if not isPlaying(ped) then return false, "animation_unavailable" end
+    return true
+end
+
 local function startPausedAnimationHold()
     if pauseHoldThreadRunning then return end
 
@@ -725,7 +817,7 @@ local function startPausedAnimationHold()
             if ped and ped ~= 0 and DoesEntityExist(ped)
                 and currentAnimation.dict
                 and currentAnimation.anim
-                and IsEntityPlayingAnim(ped, currentAnimation.dict, currentAnimation.anim, 3) == 1
+                and isPlaying(ped)
             then
                 SetEntityAnimCurrentTime(ped, currentAnimation.dict, currentAnimation.anim, currentAnimation.pausedTime)
                 SetEntityAnimSpeed(ped, currentAnimation.dict, currentAnimation.anim, 0.0)
@@ -761,8 +853,8 @@ local function pauseCurrentAnimation()
         return false, 0.0
     end
 
-    local playing = IsEntityPlayingAnim(ped, currentAnimation.dict, currentAnimation.anim, 3)
-    if playing ~= 1 then
+    local playing = isPlaying(ped)
+    if not playing then
         debugAction("anim:pause:failed", {
             dict = currentAnimation.dict,
             anim = currentAnimation.anim,
@@ -801,11 +893,12 @@ local function startTimelineThread()
             local ped = PlayerPedId()
 
             if ped and ped ~= 0 and DoesEntityExist(ped) and currentAnimation.dict and currentAnimation.anim then
-                playing = IsEntityPlayingAnim(ped, currentAnimation.dict, currentAnimation.anim, 3) == 1
+                playing = isPlaying(ped)
                 if playing and not currentAnimation.paused then
                     local duration = getCurrentAnimationDuration()
+                    local now = GetGameTimer()
                     if duration > 0.0 and currentAnimation.startedAt > 0 then
-                        local elapsed = (GetGameTimer() - currentAnimation.startedAt) / 1000.0
+                        local elapsed = (now - currentAnimation.startedAt) / 1000.0
                         phase = (currentAnimation.startPhase or 0.0)
                             + ((elapsed * (currentAnimation.effectiveRate or 1.0)) / duration)
                         if (currentAnimation.flags or 0) % 2 == 1 then
@@ -815,6 +908,14 @@ local function startTimelineThread()
                         end
                     end
                     currentAnimation.lastTime = phase
+                    local rate = currentAnimation.playbackRate
+                    if currentAnimation.startedAt > 0 and rate ~= currentAnimation.effectiveRate then
+                        SetEntityAnimSpeed(ped, currentAnimation.dict, currentAnimation.anim, rate)
+                        -- Continue the timeline from the same position at the new speed.
+                        currentAnimation.startPhase = phase
+                        currentAnimation.startedAt = now
+                        currentAnimation.effectiveRate = rate
+                    end
                 end
             end
 
@@ -824,6 +925,8 @@ local function startTimelineThread()
                 durationSeconds = getCurrentAnimationDuration(),
                 paused = currentAnimation.paused == true,
                 playing = playing,
+                dict = currentAnimation.dict,
+                anim = currentAnimation.anim,
             })
 
             Wait(75)
@@ -833,11 +936,105 @@ local function startTimelineThread()
     end)
 end
 
+local supportedWeather = { CLEAR = true, EXTRASUNNY = true, CLOUDS = true, OVERCAST = true, RAIN = true, FOGGY = true }
+
+local function clearSceneOverrides()
+    if sceneOverrides.clock then
+        local weather = pr_lib.weather
+        local clock
+        if weather and weather.GetSnapshot then
+            local ok, available, snapshot = pcall(weather.GetSnapshot)
+            if ok and available and type(snapshot) == "table" then clock = snapshot.currentTime end
+        end
+        if clock and tonumber(clock.hour) and tonumber(clock.minute) then
+            NetworkOverrideClockTime(clock.hour, clock.minute, 0)
+        else
+            NetworkClearClockTimeOverride()
+        end
+    end
+    if sceneOverrides.weather then ClearOverrideWeather() end
+    sceneOverrides = {}
+end
+
+local function applySceneWeather()
+    if scene.hour then
+        NetworkOverrideClockTime(scene.hour, 0, 0)
+        sceneOverrides.clock = true
+    end
+    if scene.weather then
+        SetOverrideWeather(scene.weather)
+        sceneOverrides.weather = true
+    end
+end
+
+local function updateScene(data)
+    local color = type(data.color) == "string" and data.color:match("^#(%x%x%x%x%x%x)$") or "24c848"
+    if (data.hour == nil and sceneOverrides.clock) or (not supportedWeather[data.weather] and sceneOverrides.weather) then
+        clearSceneOverrides()
+    end
+    scene = {
+        backdrop = data.backdrop == true,
+        r = tonumber(color:sub(1, 2), 16), g = tonumber(color:sub(3, 4), 16), b = tonumber(color:sub(5, 6), 16),
+        hour = data.hour ~= nil and math.floor(math.max(0, math.min(23, tonumber(data.hour) or 12))) or nil,
+        weather = supportedWeather[data.weather] and data.weather or nil,
+    }
+    applySceneWeather()
+end
+
+local function drawBackdrop(ped)
+    local camera = GetFinalRenderedCamCoord()
+    local rotation = GetFinalRenderedCamRot(2)
+    local pitch, yaw = math.rad(rotation.x), math.rad(rotation.z)
+    local sinPitch, cosPitch = math.sin(pitch), math.cos(pitch)
+    local sinYaw, cosYaw = math.sin(yaw), math.cos(yaw)
+    local forward = vector3(-sinYaw * cosPitch, cosYaw * cosPitch, sinPitch)
+    local right = vector3(cosYaw, sinYaw, 0.0)
+    local up = vector3(sinYaw * sinPitch, -cosYaw * sinPitch, cosPitch)
+    local delta = GetEntityCoords(ped) + vector3(0.0, 0.0, 0.85) - camera
+    local depth = math.max(2.0, delta.x * forward.x + delta.y * forward.y + delta.z * forward.z + 1.8)
+    local center = camera + forward * depth
+    local halfHeight = depth * math.tan(math.rad(GetFinalRenderedCamFov()) * 0.5) * 1.08
+    local horizontal = right * (halfHeight * GetAspectRatio(false))
+    local vertical = up * halfHeight
+    local a, b = center - horizontal + vertical, center - horizontal - vertical
+    local c, d = center + horizontal - vertical, center + horizontal + vertical
+    DrawPoly(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, scene.r, scene.g, scene.b, 255)
+    DrawPoly(a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z, scene.r, scene.g, scene.b, 255)
+end
+
+local function startSceneThread()
+    local session = editorSession
+    CreateThread(function()
+        local updateWeatherAt = 0
+        while isOpen and session == editorSession do
+            if not movementTesting then
+                local now = GetGameTimer()
+                if (scene.hour or scene.weather) and now >= updateWeatherAt then
+                    applySceneWeather()
+                    updateWeatherAt = now + 500
+                end
+                local ped = PlayerPedId()
+                if scene.backdrop and DoesEntityExist(ped) then drawBackdrop(ped) end
+            end
+            Wait(scene.backdrop and not movementTesting and 0 or 100)
+        end
+    end)
+end
+
+stopMovementTest = function()
+    if not movementTesting then return end
+    movementTesting = false
+    applySceneWeather()
+    CreateThread(restoreAnimationEditorFocus)
+    SendNUIMessage({ action = "testMode", active = false })
+end
+
 local function forceOpenUi(source)
     debugAction("ui:open", {
         source = source or "unknown",
     })
 
+    editorSession = editorSession + 1
     isOpen = true
     SetNuiFocus(true, true)
     if SetNuiFocusKeepInput then
@@ -845,18 +1042,18 @@ local function forceOpenUi(source)
     end
     startControlsThread()
     startTimelineThread()
+    startSceneThread()
     startEditorCamera(currentCameraTarget)
+    if not isOpen then return false end
     sendVisible(true)
+    sendEditorProps()
     bridgeDebug("info", ("[pr_animateConfig] openUi source=%s"):format(source or "unknown"))
+    return true
 end
 
 local function openUi(source)
-    if isOpen then
-        forceOpenUi(source or "refresh")
-        return
-    end
-
-    forceOpenUi(source or "open")
+    if isOpen then return true end
+    return forceOpenUi(source or "open")
 end
 
 local function closeUi()
@@ -869,7 +1066,11 @@ local function closeUi()
 
     debugAction("ui:close", {})
     isOpen = false
+    editorSession = editorSession + 1
+    gizmoActive = false
     stopEditorCamera()
+    clearSceneOverrides()
+    scene = {}
     resetAll()
     SetNuiFocus(false, false)
     if SetNuiFocusKeepInput then
@@ -1056,32 +1257,90 @@ RegisterNUICallback("pageReady", function(_, cb)
 
     if isOpen then
         sendVisible(true)
+        sendEditorProps()
+        if movementTesting then SendNUIMessage({ action = "testMode", active = true }) end
     end
     cb({ ok = true })
 end)
 
+local function editorReady()
+    return isOpen and not movementTesting and not gizmoActive and not propOperation
+end
+
+local function readAnimation(data)
+    if type(data) ~= "table" or type(data.dict) ~= "string" or data.dict == "" or #data.dict > 200
+        or type(data.anim) ~= "string" or data.anim == "" or #data.anim > 200 then return nil end
+    local flags = tonumber(data.flag or data.flags) or 0
+    if flags ~= flags or math.abs(flags) > 2147483647 then flags = 0 end
+    return {
+        dict = data.dict, anim = data.anim, flags = math.floor(flags),
+        blendIn = tonumber(data.blendIn) or 8.0, blendOut = tonumber(data.blendOut) or 8.0,
+        duration = tonumber(data.duration) or -1, playbackRate = normalizePlaybackRate(data.playbackRate),
+    }
+end
+
+local function playEditorAnimation(data, allowResume)
+    local clip = readAnimation(data)
+    if not clip then return false, "animation_unavailable" end
+
+    local ped = PlayerPedId()
+    local resume = allowResume and currentAnimation.paused and currentAnimation.dict == clip.dict
+        and currentAnimation.anim == clip.anim and currentAnimation.flags == clip.flags and isPlaying(ped)
+    for key, value in pairs(clip) do currentAnimation[key] = value end
+    if resume then
+        currentAnimation.paused = false
+        currentAnimation.startPhase = currentAnimation.pausedTime
+        currentAnimation.lastTime = currentAnimation.startPhase
+        currentAnimation.startedAt = GetGameTimer()
+        currentAnimation.effectiveRate = clip.playbackRate
+        SetEntityAnimSpeed(ped, clip.dict, clip.anim, clip.playbackRate)
+        return true
+    end
+    return playCurrentAnimation()
+end
+
 RegisterNUICallback("playAnimation", function(data, cb)
-    data = data or {}
-    debugAction("nui:playAnimation", data)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local ok, reason = playEditorAnimation(data, true)
+    cb({ ok = ok, error = reason or (not ok and "animation_unavailable" or nil) })
+end)
 
+RegisterNUICallback("testAnimation", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local ped = PlayerPedId()
+    if IsEntityDead(ped) or IsPedInAnyVehicle(ped, false) then return cb({ ok = false, error = "testUnavailable" }) end
+    local session = editorSession
+    local ok, reason = playEditorAnimation(data, true)
+    if ok then ok, reason = awaitEditorAnimation(ped, animationRequest) end
+    if not ok or editorSession ~= session then return cb({ ok = false, error = reason or "cancelled" }) end
 
-    currentAnimation.dict = data.dict
-    currentAnimation.anim = data.anim
-    currentAnimation.flags = tonumber(data.flag) or 0
-    currentAnimation.blendIn = tonumber(data.blendIn) or 8.0
-    currentAnimation.blendOut = tonumber(data.blendOut) or 8.0
-    currentAnimation.duration = tonumber(data.duration) or -1
-    currentAnimation.playbackRate = tonumber(data.playbackRate) or 1.0
-
+    movementTesting = true
+    bonePicker = nil
+    clearSceneOverrides()
+    stopEditorCamera()
+    SetNuiFocus(false, false)
+    if SetNuiFocusKeepInput then SetNuiFocusKeepInput(false) end
+    SendNUIMessage({ action = "testMode", active = true })
     cb({ ok = true })
+end)
 
-    CreateThread(function()
-        playCurrentAnimation()
-    end)
+RegisterNUICallback("setScene", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    updateScene(data)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback("setPlaybackRate", function(data, cb)
+    if isOpen then
+        currentAnimation.playbackRate = normalizePlaybackRate(data.rate)
+    end
+    cb({ ok = isOpen })
 end)
 
 RegisterNUICallback("stopAnimation", function(_, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
     debugAction("nui:stopAnimation", {})
+    animationRequest = animationRequest + 1
     currentAnimation.paused = false
     currentAnimation.pausedTime = 0.0
     currentAnimation.lastTime = 0.0
@@ -1099,167 +1358,313 @@ RegisterNUICallback("stopAnimation", function(_, cb)
 end)
 
 RegisterNUICallback("pauseAnimation", function(_, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
     debugAction("nui:pauseAnimation", {})
     local ok, animTime = pauseCurrentAnimation()
     cb({
         ok = ok,
+        error = not ok and "animation_unavailable" or nil,
         animTime = animTime,
     })
 end)
 
-RegisterNUICallback("seekAnimation", function(data, cb)
-    data = data or {}
-    local phase = math.max(0.0, math.min(1.0, tonumber(data.phase) or 0.0))
+local function seekPose(phase)
+    if not currentAnimation.dict or not currentAnimation.anim then return false, "animation_unavailable" end
+    local ped = PlayerPedId()
+    if not isPlaying(ped) then
+        local ok, reason = playCurrentAnimation()
+        if not ok then return false, reason end
 
-    if not currentAnimation.dict or currentAnimation.dict == "" or not currentAnimation.anim or currentAnimation.anim == "" then
-        cb({ ok = false, error = "no_animation" })
-        return
+        ok, reason = awaitEditorAnimation(ped, animationRequest)
+        if not ok then return false, reason end
     end
 
-    cb({ ok = true, phase = phase, durationSeconds = getCurrentAnimationDuration() })
+    currentAnimation.paused = true
+    currentAnimation.pausedTime = phase
+    currentAnimation.lastTime = phase
+    SetEntityAnimCurrentTime(ped, currentAnimation.dict, currentAnimation.anim, phase)
+    SetEntityAnimSpeed(ped, currentAnimation.dict, currentAnimation.anim, 0.0)
+    startPausedAnimationHold()
+    return true
+end
 
-    CreateThread(function()
-        local ped = PlayerPedId()
-        local playing = ped and ped ~= 0 and DoesEntityExist(ped)
-            and IsEntityPlayingAnim(ped, currentAnimation.dict, currentAnimation.anim, 3) == 1
-
-        if not playing and not playCurrentAnimation(phase) then return end
-
-        local appliedPhase = phase >= 1.0 and 0.9999 or phase
-        currentAnimation.paused = true
-        currentAnimation.pausedTime = appliedPhase
-        currentAnimation.lastTime = phase
-        SetEntityAnimCurrentTime(ped, currentAnimation.dict, currentAnimation.anim, appliedPhase)
-        SetEntityAnimSpeed(ped, currentAnimation.dict, currentAnimation.anim, 0.0)
-        startPausedAnimationHold()
-    end)
+RegisterNUICallback("seekAnimation", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local phase = math.max(0.0, math.min(0.9999, tonumber(data.phase) or 0.0))
+    local ok, reason = seekPose(phase)
+    cb({ ok = ok, error = reason, phase = phase, durationSeconds = getCurrentAnimationDuration() })
 end)
 
-RegisterNUICallback("spawnProp", function(data, cb)
-    data = data or {}
-    debugAction("nui:spawnProp", data)
+local function editorPropIndex(id)
+    for index, item in ipairs(editorProps) do
+        if item.id == id then return index end
+    end
+end
 
-    local modelName = data.model
-    if not modelName or modelName == "" then
-        cb({ ok = false, error = "invalid args" })
-        return
+local function validBone(value, fallback)
+    local boneId = math.floor(tonumber(value) or fallback)
+    if boneId < 0 or boneId > 65535 or GetPedBoneIndex(PlayerPedId(), boneId) < 0 then return nil end
+    return boneId
+end
+
+local function readRotationOrder(value)
+    return math.floor(math.max(0, math.min(5, tonumber(value) or 2)))
+end
+
+local function createEditorProp(data, operation)
+    if type(data) ~= "table" or type(data.model) ~= "string" or data.model == "" or #data.model > 80 then
+        return nil, "invalidModel"
     end
 
-    deletePropEntity()
-
-    propData.boneId = tonumber(data.boneId) or 57005
-    propData.rotOrder = tonumber(data.rotationOrder) or 2
-    propData.offset = vectorFromData(data.offset, propData.offset)
-    propData.rot = vectorFromData(data.rotation, propData.rot)
-
-    local modelHash = GetHashKey(modelName)
-    RequestModel(modelHash)
-
-    local startedAt = GetGameTimer()
-
-    while not HasModelLoaded(modelHash) do
-        Wait(0)
-
-        if GetGameTimer() - startedAt > 5000 then
-            debugAction("prop:spawn:timeout", {
-                model = modelName,
-                modelHash = modelHash,
-            }, "error")
-            cb({ ok = false, error = "model load fail" })
-            return
-        end
+    local model = GetHashKey(data.model)
+    if not IsModelInCdimage(model) or not IsModelValid(model) or IsModelAPed(model) or IsModelAVehicle(model) then
+        return nil, "invalidModel"
     end
 
     local ped = PlayerPedId()
+    local boneId = validBone(data.boneId or data.bone, 57005)
+    if not boneId then return nil, "invalidBone" end
+
+    RequestModel(model)
+    local startedAt = GetGameTimer()
+    while propOperation == operation and not HasModelLoaded(model) and GetGameTimer() - startedAt < 5000 do
+        Wait(0)
+    end
+    if propOperation ~= operation or PlayerPedId() ~= ped or not HasModelLoaded(model) then
+        SetModelAsNoLongerNeeded(model)
+        return nil, "modelLoadFailed"
+    end
+
     local coords = GetEntityCoords(ped)
-    local forward = GetEntityForwardVector(ped)
-    local spawnCoords = coords + (forward * 2.0)
-    local entity = CreateObject(modelHash, spawnCoords.x, spawnCoords.y, spawnCoords.z, true, true, false)
+    local entity = CreateObjectNoOffset(model, coords.x, coords.y, coords.z, false, false, false)
+    SetModelAsNoLongerNeeded(model)
+    if not entity or entity == 0 or not DoesEntityExist(entity) then return nil, "modelLoadFailed" end
 
-    if not entity or not DoesEntityExist(entity) then
-        debugAction("prop:spawn:failed", {
-            model = modelName,
-            modelHash = modelHash,
-        }, "error")
-        cb({ ok = false, error = "spawn fail" })
-        return
+    nextPropId = nextPropId + 1
+    local prop = {
+        id = nextPropId, entity = entity, model = data.model, boneId = boneId, rotOrder = readRotationOrder(data.rotationOrder),
+        offset = vectorFromData(data.offset or data.pos), rot = vectorFromData(data.rotation or data.rot),
+        visible = data.visible ~= false,
+    }
+    SetEntityAsMissionEntity(entity, true, true)
+    SetEntityCollision(entity, false, false)
+    SetEntityVisible(entity, false, false)
+    if not attachEntityToPedBone(prop) then
+        deleteEntity(entity)
+        return nil, "invalidBone"
+    end
+    return prop
+end
+
+local function convertPropRotation(prop, order)
+    if prop.rotOrder == order then return prop.rot end
+    local handle = createGizmoHandle(prop.entity)
+    if not handle then return nil end
+    SetEntityRotation(handle, prop.rot.x, prop.rot.y, prop.rot.z, prop.rotOrder, true)
+    local rotation = GetEntityRotation(handle, order)
+    deleteEntity(handle)
+    return rotation
+end
+
+RegisterNUICallback("spawnProp", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local index = data.replace and editorPropIndex(data.id)
+    if data.replace and not index then return cb({ ok = false, error = "noProp" }) end
+    if not index and #editorProps >= Config.MaxEditorProps then return cb({ ok = false, error = "propLimit" }) end
+
+    if index then
+        local existing = editorProps[index]
+        data.boneId, data.rotationOrder, data.visible = existing.boneId, existing.rotOrder, existing.visible
+        data.offset, data.rotation = plainVector(existing.offset), plainVector(existing.rot)
     end
 
-    SetEntityHeading(entity, GetEntityHeading(ped))
-    PlaceObjectOnGroundProperly(entity)
-    SetModelAsNoLongerNeeded(modelHash)
-
-    local netId = NetworkGetNetworkIdFromEntity(entity)
-    if netId and netId ~= 0 then
-        SetNetworkIdExistsOnAllMachines(netId, true)
-        SetNetworkIdCanMigrate(netId, true)
-    end
-
-    propData.entity = entity
-    propData.model = modelName
-
-    local attached = attachEntityToPedBone()
-    sendPropStatus(attached and "attached" or "none")
-    debugAction("prop:spawn:result", {
-        model = modelName,
-        modelHash = modelHash,
-        entity = entity,
-        attached = attached,
-    }, attached and "info" or "warn")
-
-    cb({ ok = attached })
+    local operation = {}
+    propOperation = operation
+    local prop, reason = createEditorProp(data, operation)
+    if propOperation == operation then propOperation = nil end
+    if not prop then return cb({ ok = false, error = reason }) end
+    if index then deleteEntity(editorProps[index].entity) end
+    editorProps[index or #editorProps + 1] = prop
+    propData = prop
+    SetEntityVisible(prop.entity, prop.visible, false)
+    sendEditorProps(true)
+    cb({ ok = true })
 end)
 
-RegisterNUICallback("deleteProp", function(_, cb)
-    debugAction("nui:deleteProp", {})
-    deletePropEntity()
+RegisterNUICallback("selectProp", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local index = editorPropIndex(data.id)
+    if not index then return cb({ ok = false, error = "noProp" }) end
+    propData = editorProps[index]
+    sendEditorProps()
+    cb({ ok = true })
+end)
+
+RegisterNUICallback("togglePropVisibility", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local index = editorPropIndex(data.id)
+    if not index then return cb({ ok = false, error = "noProp" }) end
+    local prop = editorProps[index]
+    prop.visible = not prop.visible
+    SetEntityVisible(prop.entity, prop.visible, false)
+    sendEditorProps(true)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback("deleteProp", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local index = editorPropIndex(data.id)
+    if not index then return cb({ ok = false, error = "noProp" }) end
+    local removed = table.remove(editorProps, index)
+    deleteEntity(removed.entity)
+    if removed == propData then propData = editorProps[index] or editorProps[index - 1] or {} end
+    sendEditorProps(true)
     cb({ ok = true })
 end)
 
 RegisterNUICallback("updatePropOffsets", function(data, cb)
-    data = data or {}
-    debugAction("nui:updatePropOffsets", data)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local index = editorPropIndex(data.id)
+    if not index then return cb({ ok = false, error = "noProp" }) end
+    local prop = editorProps[index]
+    if data.revision and prop.revision and data.revision <= prop.revision then return cb({ ok = false, error = "cancelled" }) end
+    local bone = validBone(data.boneId, prop.boneId)
+    if not bone or not DoesEntityExist(prop.entity) then return cb({ ok = false, error = "invalidBone" }) end
 
-    propData.boneId = tonumber(data.boneId) or propData.boneId or 57005
-    propData.rotOrder = tonumber(data.rotationOrder) or propData.rotOrder or 2
-    propData.offset = vectorFromData(data.offset, propData.offset)
-    propData.rot = vectorFromData(data.rotation, propData.rot)
-
-    if propData.entity and DoesEntityExist(propData.entity) then
-        local attached = attachEntityToPedBone()
-        debugAction("prop:update:result", {
-            attached = attached,
-            entity = propData.entity,
-        }, attached and "info" or "warn")
-    else
-        debugAction("prop:update:stored", {
-            hasEntity = false,
-            boneId = propData.boneId,
-            rotationOrder = propData.rotOrder,
-        })
+    local order = readRotationOrder(data.rotationOrder)
+    local rotation = vectorFromData(data.rotation, prop.rot)
+    if order ~= prop.rotOrder and data.preserveRotation ~= false then
+        rotation = convertPropRotation(prop, order)
+        if not rotation then return cb({ ok = false, error = "rotationFailed" }) end
     end
 
+    prop.revision = data.revision
+    prop.boneId, prop.rotOrder, prop.rot = bone, order, rotation
+    prop.offset = vectorFromData(data.offset, prop.offset)
+    attachEntityToPedBone(prop)
+    cb({ ok = true, rotation = plainVector(rotation), rotationOrder = order })
+end)
+
+RegisterNUICallback("setBonePicker", function(data, cb)
+    if not data.active then
+        bonePicker = nil
+        SendNUIMessage({ action = "boneMarkers", markers = {} })
+        return cb({ ok = true })
+    end
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local picker, group = {}, data.group or "body"
+    bonePicker = picker
+    CreateThread(function()
+        local ped = PlayerPedId()
+        local bones = {}
+        for _, bone in ipairs(Config.Bones) do
+            if group == "all" or group == bone.group or (group == "body" and not bone.finger) then
+                local index = GetPedBoneIndex(ped, bone.id)
+                if index >= 0 then bones[#bones + 1] = { id = bone.id, index = index } end
+            end
+        end
+        while bonePicker == picker and ped == PlayerPedId() and DoesEntityExist(ped) do
+            local markers = {}
+            local pedCoords = GetEntityCoords(ped)
+            local towardCamera = GetFinalRenderedCamCoord() - pedCoords
+            for _, bone in ipairs(bones) do
+                local coords = GetWorldPositionOfEntityBone(ped, bone.index)
+                local visible, x, y = World3dToScreen2d(coords.x, coords.y, coords.z)
+                if visible then
+                    local delta = coords - pedCoords
+                    local depth = delta.x * towardCamera.x + delta.y * towardCamera.y + delta.z * towardCamera.z
+                    markers[#markers + 1] = { id = bone.id, x = x, y = y, depth = depth }
+                end
+            end
+            table.sort(markers, function(a, b) return a.depth < b.depth end)
+            SendNUIMessage({ action = "boneMarkers", group = group, markers = markers })
+            Wait(40)
+        end
+    end)
     cb({ ok = true })
 end)
 
+RegisterNUICallback("getCatalog", function(_, cb)
+    cb({ ok = isOpen, animations = savedAnimationCatalog })
+end)
+
+RegisterNUICallback("restoreSnapshot", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    if type(data.props) ~= "table" or #data.props > Config.MaxEditorProps then return cb({ ok = false, error = "propLimit" }) end
+
+    local operation, replacement, session = {}, {}, editorSession
+    propOperation = operation
+    for i, item in ipairs(data.props) do
+        local prop, reason = createEditorProp(item, operation)
+        if not prop then
+            for _, created in ipairs(replacement) do deleteEntity(created.entity) end
+            if propOperation == operation then propOperation = nil end
+            return cb({ ok = false, error = reason })
+        end
+        replacement[i] = prop
+    end
+
+    clearEditorProps()
+    editorProps = replacement
+    propData = replacement[tonumber(data.selectedIndex) or 1] or replacement[1] or {}
+    for _, prop in ipairs(editorProps) do SetEntityVisible(prop.entity, prop.visible, false) end
+    if type(data.scene) == "table" then updateScene(data.scene) end
+    sendEditorProps()
+
+    local playbackError
+    if readAnimation(data.animation) then
+        local ok, reason = playEditorAnimation(data.animation, false)
+        if ok and data.paused == true then
+            ok, reason = awaitEditorAnimation(PlayerPedId(), animationRequest)
+            if ok then ok, reason = seekPose(math.max(0.0, math.min(0.9999, tonumber(data.phase) or 0.0))) end
+        end
+        if not ok then playbackError = reason or "animation_unavailable" end
+    else
+        animationRequest = animationRequest + 1
+        currentAnimation.dict, currentAnimation.anim = nil, nil
+        currentAnimation.paused, currentAnimation.lastTime, currentAnimation.startedAt = false, 0.0, 0
+        ClearPedTasks(PlayerPedId())
+    end
+
+    if propOperation == operation then propOperation = nil end
+    cb({ ok = session == editorSession, playbackError = playbackError })
+end)
+
+RegisterNUICallback("scullyRotations", function(data, cb)
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    if type(data.ids) ~= "table" or #data.ids > Config.MaxEditorProps then return cb({ ok = false, error = "propLimit" }) end
+    local rotations = {}
+    for i, id in ipairs(data.ids) do
+        local index = editorPropIndex(id)
+        if not index then return cb({ ok = false, error = "noProp" }) end
+        local rotation = convertPropRotation(editorProps[index], 1)
+        if not rotation then return cb({ ok = false, error = "rotationFailed" }) end
+        rotations[i] = plainVector(rotation)
+    end
+    cb({ ok = true, rotations = rotations })
+end)
+
 RegisterNUICallback("changeCameraTarget", function(data, cb)
-    data = data or {}
-    debugAction("nui:changeCameraTarget", data)
-    startEditorCamera(data.target or "waist")
-    cb({ ok = true })
+    if not editorReady() then return cb({ ok = false, error = "busy" }) end
+    local target = data.target
+    if target ~= "head" and target ~= "waist" and target ~= "foot" and target ~= "leftHand" and target ~= "rightHand" then
+        return cb({ ok = false, error = "cameraUnavailable" })
+    end
+    local ok = startEditorCamera(target)
+    cb({ ok = ok, error = not ok and "cameraUnavailable" or nil })
 end)
 
 RegisterNUICallback("toggleGizmo", function(_, cb)
     local entity = propData.entity
     local gizmo = getGizmo()
 
-    if gizmoActive then
-        cb({ ok = false, error = "gizmo_busy" })
+    if not editorReady() then
+        cb({ ok = false, error = "busy" })
         return
     end
 
-    if not entity or not DoesEntityExist(entity) then
-        cb({ ok = false, error = "no_prop", message = t("noProp") })
+    if not propData.visible or not entity or not DoesEntityExist(entity) then
+        cb({ ok = false, error = "noProp" })
         return
     end
 
@@ -1268,9 +1673,12 @@ RegisterNUICallback("toggleGizmo", function(_, cb)
         return
     end
 
+    local operation, session = {}, editorSession
+    propOperation = operation
     local handle = createGizmoHandle(entity)
-    local boneAnchor = createBoneTransformAnchor()
-    if not handle or not boneAnchor then
+    local boneAnchor = handle and createBoneTransformAnchor()
+    if propOperation == operation then propOperation = nil end
+    if not isOpen or session ~= editorSession or not handle or not boneAnchor or not DoesEntityExist(entity) then
         deleteEntity(handle)
         deleteEntity(boneAnchor)
         cb({ ok = false, error = "gizmo_handle_failed" })
@@ -1283,13 +1691,13 @@ RegisterNUICallback("toggleGizmo", function(_, cb)
     local syncActive = true
     local lastUiUpdate = 0
 
+    bonePicker = nil
     gizmoActive = true
     sendGizmoState(true)
-    sendPropStatus("attached")
     cb({ ok = true, started = true })
 
     CreateThread(function()
-        while syncActive and gizmoActive and DoesEntityExist(handle) and DoesEntityExist(entity) do
+        while session == editorSession and syncActive and gizmoActive and DoesEntityExist(handle) and DoesEntityExist(entity) do
             if handleDirty then
                 if captureWorldTransformAsBoneOffset(handle, boneAnchor) then
                     attachEntityToPedBone()
@@ -1308,6 +1716,11 @@ RegisterNUICallback("toggleGizmo", function(_, cb)
     end)
 
     CreateThread(function()
+        if session ~= editorSession then
+            deleteEntity(handle)
+            deleteEntity(boneAnchor)
+            return
+        end
         stopEditorCamera()
         SetNuiFocus(false, false)
         if SetNuiFocusKeepInput then SetNuiFocusKeepInput(false) end
@@ -1334,7 +1747,7 @@ RegisterNUICallback("toggleGizmo", function(_, cb)
             bridgeDebug("error", ("[pr_animateConfig] Falha no gizmo: %s"):format(tostring(confirmedResult)))
         end
 
-        if DoesEntityExist(entity) then
+        if session == editorSession and DoesEntityExist(entity) then
             if ok and result and result.confirmed == true and DoesEntityExist(handle) then
                 captureWorldTransformAsBoneOffset(handle, boneAnchor)
             else
@@ -1342,33 +1755,39 @@ RegisterNUICallback("toggleGizmo", function(_, cb)
                 propData.rot = originalRotation
             end
             attachEntityToPedBone()
-            sendCurrentOffsets()
-            sendPropStatus("attached")
         end
 
         deleteEntity(handle)
         deleteEntity(boneAnchor)
-        gizmoActive = false
-        sendGizmoState(false)
-        restoreAnimationEditorFocus()
+        if session == editorSession then
+            gizmoActive = false
+            sendGizmoState(false)
+            sendEditorProps(true)
+            restoreAnimationEditorFocus()
+        end
     end)
 end)
 RegisterNUICallback("captureGizmo", function(_, cb)
     local entity = propData.entity
-    if gizmoActive then
-        cb({ ok = false, error = "gizmo_busy" })
+    if not editorReady() then
+        cb({ ok = false, error = "busy" })
         return
     end
 
-    if not entity or not DoesEntityExist(entity) then
-        cb({ ok = false, error = "no_prop", message = t("noProp") })
+    if not propData.visible or not entity or not DoesEntityExist(entity) then
+        cb({ ok = false, error = "noProp" })
         return
     end
 
+    local operation = {}
+    propOperation = operation
     local captured = captureWorldTransformAsBoneOffset(entity)
-    attachEntityToPedBone()
-    sendCurrentOffsets()
-    cb({ ok = captured })
+    if propOperation == operation then propOperation = nil end
+    if captured then
+        attachEntityToPedBone()
+        sendEditorProps(true)
+    end
+    cb({ ok = captured, error = not captured and "rotationFailed" or nil })
 end)
 
 RegisterNUICallback("saveConfig", function(data, cb)
@@ -1412,8 +1831,11 @@ AddEventHandler("onResourceStop", function(resourceName)
 
     local gizmo = getGizmo()
     if gizmoActive and gizmo and type(gizmo.stop) == "function" then gizmo.stop() end
+    isOpen = false
+    editorSession = editorSession + 1
     gizmoActive = false
     stopSavedAnimation()
+    clearSceneOverrides()
     resetAll()
     stopEditorCamera()
     SetNuiFocus(false, false)

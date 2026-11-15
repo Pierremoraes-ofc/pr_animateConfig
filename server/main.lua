@@ -58,8 +58,11 @@ local function normalizeEntry(id, payload, existing)
     end
 
     local now = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    local label = payload.label
+    if type(label) ~= "string" or #label > 400 or not utf8.len(label) or label == "" then label = nil end
     return {
         id = id,
+        label = label,
         animation = {
             dict = animation.dict,
             anim = animation.anim,

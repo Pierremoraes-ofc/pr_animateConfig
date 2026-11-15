@@ -1,3 +1,5 @@
+import { formatExport } from "./formats.js";
+
 const resourceName = typeof GetParentResourceName === "function"
     ? GetParentResourceName()
     : "pr_animateConfig";
@@ -12,7 +14,34 @@ let currentBones = [];
 let currentGizmoActive = false;
 let currentTimelineDuration = 0;
 let timelineDragging = false;
-let timelineSeekTimer = null;
+let timelineSeekTimer;
+let timelinePhase = 0;
+let timelinePaused = false;
+let timelineClip;
+let pendingSeek = Promise.resolve();
+let seekRevision = 0;
+let editorProps = [];
+let selectedId;
+let maxProps = 8;
+let propRevision = 0;
+let exportRevision = 0;
+let viewGeneration = 0;
+let animationBusy = false;
+let testActive = false;
+let pickerActive = false;
+let draftEdited = false;
+let draftTimer;
+let catalog = {};
+const pendingTransforms = new Map();
+const markerButtons = new Map();
+let lastMarkers = [];
+const historyKey = "pr_animateConfig.history.v1";
+const draftKey = "pr_animateConfig.last.v1";
+const field = (id) => document.getElementById(id);
+const actionButton = (action) => document.querySelector("[data-action='" + action + "']");
+let playbackRate = 1;
+const playbackInput = document.getElementById("playbackRate");
+const playbackButtons = document.querySelectorAll("[data-playback-rate]");
 
 async function post(action, payload = {}) {
     try {
@@ -47,24 +76,22 @@ function setValue(id, value) {
     if (element) element.value = value ?? "";
 }
 
-function luaString(value) {
-    return String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
 
-function fixed(value, decimals) {
-    return Number(value || 0).toFixed(decimals);
-}
 
 function formatTimelineTime(seconds) {
     const safe = Math.max(0, Number(seconds) || 0);
-    const minutes = Math.floor(safe / 60);
-    const remaining = safe - (minutes * 60);
+    const centiseconds = Math.round(safe * 100);
+    const minutes = Math.floor(centiseconds / 6000);
+    const remaining = (centiseconds % 6000) / 100;
     return `${String(minutes).padStart(2, "0")}:${remaining.toFixed(2).padStart(5, "0")}`;
 }
 
 function renderTimeline(phase, duration, forceSlider = false) {
     const normalized = Math.max(0, Math.min(1, Number(phase) || 0));
-    currentTimelineDuration = Math.max(0, Number(duration) || currentTimelineDuration || 0);
+    timelinePhase = normalized;
+    currentTimelineDuration = Math.max(0, Number(duration) || 0);
+    const canSeek = currentTimelineDuration > 0 && !animationBusy;
+    for (const id of ["animationTimeline", "previousFrame", "nextFrame"]) field(id).disabled = !canSeek;
 
     const slider = document.getElementById("animationTimeline");
     if (slider && (!timelineDragging || forceSlider)) {
@@ -86,7 +113,18 @@ function seekTimeline(phase, final = false) {
         timelineSeekTimer = null;
     }
 
-    const send = () => post("seekAnimation", { phase: normalized });
+    const revision = ++seekRevision;
+    const send = () => {
+        pendingSeek = pendingSeek.then(async () => {
+            if (revision !== seekRevision) return;
+            const result = await post("seekAnimation", { phase: normalized });
+            if (revision !== seekRevision) return;
+            if (report(result)) {
+                timelinePaused = true;
+                if (final) rememberDraft();
+            }
+        });
+    };
     if (final) {
         send();
     } else {
@@ -124,6 +162,21 @@ function fillSelect(select, rows, getLabel, getValue) {
     });
 }
 
+function setPlaybackRate(value, apply = false) {
+    const decimal = String(value ?? "").trim().replace(",", ".");
+    const parsed = Number(decimal);
+    playbackRate = parsed > 0 && parsed <= 3.4028234e38 ? parsed : apply ? playbackRate : 1;
+    playbackInput.value = playbackRate;
+    for (const button of playbackButtons) {
+        button.setAttribute("aria-pressed", String(Number(button.dataset.playbackRate) === playbackRate));
+    }
+    if (apply) {
+        exportRevision++;
+        post("setPlaybackRate", { rate: playbackRate });
+        queueDraft();
+    }
+}
+
 function setupAnimationFields(defaults) {
     currentDefaults = defaults || {};
     setValue("animDict", currentDefaults.dict || "");
@@ -132,7 +185,7 @@ function setupAnimationFields(defaults) {
     setValue("blendIn", currentDefaults.blendIn ?? 8.0);
     setValue("blendOut", currentDefaults.blendOut ?? 8.0);
     setValue("duration", currentDefaults.duration ?? -1);
-    setValue("playbackRate", currentDefaults.playbackRate ?? 0.0);
+    setPlaybackRate(currentDefaults.playbackRate);
 }
 
 function setupAnimationPreset(animations) {
@@ -160,7 +213,7 @@ function setupAnimationPreset(animations) {
         setValue("blendIn", animation.blendIn ?? currentDefaults.blendIn ?? 8.0);
         setValue("blendOut", animation.blendOut ?? currentDefaults.blendOut ?? 8.0);
         setValue("duration", animation.duration ?? currentDefaults.duration ?? -1);
-        setValue("playbackRate", animation.playbackRate ?? currentDefaults.playbackRate ?? 0.0);
+        setPlaybackRate(animation.playbackRate ?? currentDefaults.playbackRate);
         const idInput = document.getElementById("animationId");
         if (idInput && !idInput.value.trim()) {
             idInput.value = normalizeAnimationId(animation.labelId || animation.name || "animation");
@@ -188,17 +241,15 @@ function setupFlags(flags) {
     });
 }
 
-function setupPropFields(defaultProp) {
-    currentDefaultProp = defaultProp || {};
-    setValue("propModel", currentDefaultProp.model || "");
-    setValue("boneId", currentDefaultProp.boneId || "");
-    setValue("rotationOrder", currentDefaultProp.rotationOrder ?? 2);
-    setValue("offsetX", currentDefaultProp.offset?.x ?? 0);
-    setValue("offsetY", currentDefaultProp.offset?.y ?? 0);
-    setValue("offsetZ", currentDefaultProp.offset?.z ?? 0);
-    setValue("rotX", currentDefaultProp.rotation?.x ?? 0);
-    setValue("rotY", currentDefaultProp.rotation?.y ?? 0);
-    setValue("rotZ", currentDefaultProp.rotation?.z ?? 0);
+function setupPropFields(prop) {
+    setValue("propModel", prop.model || "");
+    setValue("boneId", prop.boneId ?? 57005);
+    setValue("rotationOrder", prop.rotationOrder ?? 2);
+    for (const axis of ["x", "y", "z"]) {
+        setValue("offset" + axis.toUpperCase(), prop.offset?.[axis] ?? 0);
+        setValue("rot" + axis.toUpperCase(), prop.rotation?.[axis] ?? 0);
+    }
+    syncBoneList();
 }
 
 function setupProps(props) {
@@ -225,29 +276,35 @@ function setupProps(props) {
     };
 }
 
+function boneLabel(bone) {
+    const label = text(bone.labelId);
+    return bone.finger ? label + " " + bone.segment + " · " + text(bone.group + "Bones") : label;
+}
+
+function folded(value) {
+    return value.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
+}
+
+function matchesBone(bone) {
+    const group = field("boneRegion").value;
+    if (!(group === "all" || group === bone.group || (group === "body" && !bone.finger))) return false;
+    const query = folded(field("boneSearch").value.trim());
+    return !query || folded(boneLabel(bone)).includes(query) || String(bone.id).includes(query)
+        || ("0x" + bone.id.toString(16)).includes(query);
+}
+
+function syncBoneList() {
+    const bones = currentBones.filter(matchesBone);
+    fillSelect(field("bonePreset"), [{ labelId: "custom" }, ...bones],
+        (bone) => bone.id === undefined ? text("custom") : boneLabel(bone) + " (" + bone.id + ")",
+        (bone) => String(bone.id ?? ""));
+    const current = Number(field("boneId").value);
+    setValue("bonePreset", bones.some((bone) => bone.id === current) ? current : "");
+}
+
 function setupBones(bones) {
-    currentBones = bones || [];
-    const select = document.getElementById("bonePreset");
-    if (!select) return;
-
-    fillSelect(
-        select,
-        [{ labelId: "custom" }, ...currentBones],
-        (row) => row.id ? `${text(row.labelId, row.labelId)} (${row.id})` : text(row.labelId, row.labelId),
-        (_, index) => index === 0 ? "custom" : String(index - 1)
-    );
-
-    select.value = "custom";
-    select.onchange = () => {
-        if (select.value === "custom") return;
-
-        const bone = currentBones[Number(select.value)];
-        if (!bone) return;
-
-        setValue("boneId", bone.id || "");
-        addDebugLog(`nui:bonePreset ${bone.labelId || bone.id}`);
-        applyPropOffsets("bonePreset");
-    };
+    currentBones = bones;
+    syncBoneList();
 }
 
 function setupSteps(nudgeSteps) {
@@ -272,13 +329,31 @@ function updateStatus() {
     }
 }
 
-function updatePropStatus(status) {
-    const propStatus = document.getElementById("propStatus");
-    if (!propStatus) return;
+function updatePropControls() {
+    const prop = editorProps.find((item) => item.id === selectedId);
+    field("propStatus").textContent = prop ? editorProps.length + " / " + maxProps + " " + text("attachedProps") : text("noProp");
+    field("attachedProp").disabled = !prop || currentGizmoActive;
+    field("replaceProp").disabled = !prop || currentGizmoActive;
+    field("togglePropVisibility").disabled = !prop || currentGizmoActive;
+    field("togglePropVisibility").textContent = text(prop?.visible === false ? "showProp" : "hideProp");
+    actionButton("spawnProp").disabled = editorProps.length >= maxProps || currentGizmoActive;
+    actionButton("deleteProp").disabled = !prop || currentGizmoActive;
+    actionButton("toggleGizmo").disabled = !prop?.visible || currentGizmoActive;
+    actionButton("captureGizmo").disabled = !prop?.visible || currentGizmoActive;
+}
 
-    propStatus.textContent = status === "attached"
-        ? text("propAttached", "Prop attached")
-        : text("noProp", "No prop");
+function receiveProps(payload) {
+    editorProps = Array.isArray(payload.props) ? payload.props : [];
+    selectedId = payload.selectedId;
+    const current = editorProps.find((item) => item.id === selectedId);
+    fillSelect(field("attachedProp"), editorProps.length ? editorProps : [{ model: text("noProp") }],
+        (item, index) => item.id ? (index + 1) + ". " + item.model + (item.visible ? "" : " · " + text("hiddenProp")) : item.model,
+        (item) => String(item.id ?? ""));
+    setValue("attachedProp", selectedId);
+    setupPropFields(current || currentDefaultProp);
+    setValue("propPreset", "custom");
+    updatePropControls();
+    renderBoneMarkers(lastMarkers);
 }
 
 function addDebugLog(message) {
@@ -312,11 +387,27 @@ function showApp(payload) {
     setupAnimationFields(payload.defaults || {});
     setupAnimationPreset(payload.animations || []);
     setupFlags(payload.flags || []);
-    setupPropFields(payload.defaultProp || {});
+    maxProps = payload.maxProps || 8;
+    currentDefaultProp = payload.defaultProp || {};
+    draftEdited = false;
+    timelineDragging = false;
+    timelinePaused = false;
+    timelineClip = undefined;
+    currentGizmoActive = false;
+    for (const id of ["animationId", "animationLabel", "output", "boneSearch"]) setValue(id, "");
+    setValue("boneRegion", "body");
+    setTestMode(false);
+    setPickerUi(false);
+    writeScene({});
+    for (const id of ["editorFeedback", "propFeedback", "exportFeedback"]) feedback("", false, id);
     setupProps(payload.props || []);
     setupBones(payload.bones || []);
     setupSteps(payload.nudgeSteps || {});
     updateStatus();
+    receiveProps({ props: [] });
+    setAnimationBusy(false);
+    renderTimeline(0, 0, true);
+    renderHistory();
 
     app.classList.remove("is-hidden");
     addDebugLog(text("opened", "Editor opened."));
@@ -328,6 +419,14 @@ function showApp(payload) {
 }
 
 function hideApp() {
+    if (draftEdited) rememberDraft();
+    clearTimeout(timelineSeekTimer);
+    clearTimeout(draftTimer);
+    seekRevision++;
+    exportRevision++;
+    viewGeneration++;
+    pendingTransforms.clear();
+    setPickerUi(false);
     app.classList.add("is-hidden");
 }
 
@@ -340,22 +439,17 @@ function normalizeAnimationId(value) {
         .slice(0, 64);
 }
 
-function readAnimationId() {
-    const input = document.getElementById("animationId");
-    const id = normalizeAnimationId(input?.value);
-    if (input) input.value = id;
-    return id;
-}
+
 
 function readAnimationPayload() {
     return {
-        dict: document.getElementById("animDict")?.value || "",
-        anim: document.getElementById("animName")?.value || "",
-        flag: numberValue(document.getElementById("animFlag")?.value, 0),
+        dict: field("animDict").value.trim(),
+        anim: field("animName").value.trim(),
+        flag: Math.trunc(numberValue(field("animFlag").value, 0)),
         blendIn: numberValue(document.getElementById("blendIn")?.value, 8.0),
         blendOut: numberValue(document.getElementById("blendOut")?.value, 8.0),
         duration: numberValue(document.getElementById("duration")?.value, -1),
-        playbackRate: numberValue(document.getElementById("playbackRate")?.value, 0.0),
+        playbackRate,
     };
 }
 
@@ -377,49 +471,179 @@ function readPropPayload() {
     };
 }
 
-function generateLuaConfig() {
-    const anim = readAnimationPayload();
-    const prop = readPropPayload();
-    const output = document.getElementById("output");
-    if (!output) return;
-
-    const id = readAnimationId();
-    output.value = `{
-    id = "${luaString(id)}",
-    dict = "${luaString(anim.dict)}",
-    anim = "${luaString(anim.anim)}",
-    flags = ${anim.flag},
-    props = {
-        {
-            model = "${luaString(prop.model)}",
-            bone = ${prop.boneId},
-            pos = vec3(${fixed(prop.offset.x, 4)}, ${fixed(prop.offset.y, 4)}, ${fixed(prop.offset.z, 4)}),
-            rot = vec3(${fixed(prop.rotation.x, 3)}, ${fixed(prop.rotation.y, 3)}, ${fixed(prop.rotation.z, 3)}),
-            rotationOrder = ${prop.rotationOrder},
-        },
-    },
-}`;
-    addDebugLog("nui:generateConfig");
+function feedback(message, error = false, id = "editorFeedback") {
+    const output = field(id);
+    output.textContent = message;
+    output.classList.toggle("is-error", error);
 }
 
-function ensureGeneratedConfig() {
-    const output = document.getElementById("output");
-    if (!output) return "";
+function report(result, output) {
+    if (result?.ok) return true;
+    if (result?.error !== "cancelled") feedback(text(result?.error, text("editorError")), true, output);
+    return false;
+}
 
-    if (!output.value.trim()) {
-        generateLuaConfig();
+function scenePayload() {
+    const hour = field("sceneHour").value;
+    return {
+        backdrop: Boolean(field("sceneBackdrop").value),
+        preset: field("sceneBackdrop").value,
+        color: field("sceneColor").value,
+        hour: hour === "" ? undefined : Number(hour),
+        weather: field("sceneWeather").value,
+    };
+}
+
+function writeScene(scene) {
+    setValue("sceneBackdrop", scene.preset ?? (scene.backdrop ? "custom" : ""));
+    setValue("sceneColor", scene.color || "#24c848");
+    setValue("sceneHour", scene.hour);
+    setValue("sceneWeather", scene.weather);
+}
+
+function snapshot() {
+    const animation = readAnimationPayload();
+    const sameClip = animation.dict === timelineClip?.dict && animation.anim === timelineClip?.anim;
+    return {
+        id: normalizeAnimationId(field("animationId").value),
+        label: field("animationLabel").value.trim(),
+        animation,
+        props: editorProps.map(({ id, ...prop }) => prop),
+        selectedIndex: editorProps.findIndex(({ id }) => id === selectedId) + 1,
+        phase: sameClip ? timelinePhase : 0,
+        paused: sameClip && (timelinePaused || timelinePhase > 0),
+        scene: scenePayload(),
+    };
+}
+
+function readStorage(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
+    catch { return fallback; }
+}
+
+function writeStorage(key, data) {
+    try { localStorage.setItem(key, JSON.stringify(data)); }
+    catch { /* Keep editing available when local storage is disabled. */ }
+}
+
+function rememberDraft() {
+    if (app.classList.contains("is-hidden")) return;
+    draftEdited = true;
+    clearTimeout(draftTimer);
+    writeStorage(draftKey, snapshot());
+    field("restoreLast").disabled = !readStorage(draftKey, null);
+}
+
+function queueDraft() {
+    draftEdited = true;
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(rememberDraft, 200);
+}
+
+function recentEntries() {
+    const entries = readStorage(historyKey, []);
+    return Array.isArray(entries) ? entries.filter((entry) => entry?.draft?.animation) : [];
+}
+
+function addHistory(data) {
+    const key = data.id || data.animation.dict + "/" + data.animation.anim;
+    const entries = recentEntries().filter((entry) => entry.key !== key);
+    writeStorage(historyKey, [{ key, draft: data }, ...entries].slice(0, 20));
+    rememberDraft();
+    renderHistory();
+}
+
+function renderHistory() {
+    const entries = Object.entries(catalog).sort(([a], [b]) => a.localeCompare(b));
+    fillSelect(field("savedAnimation"), [
+        { label: text("chooseSaved"), value: "" },
+        ...recentEntries().map(({ draft }, index) => ({
+            label: text("recent") + " · " + (draft.label || draft.id || draft.animation.anim),
+            value: "local:" + index,
+        })),
+        ...entries.map(([id, item]) => ({ label: text("catalog") + " · " + (item.label || id), value: "server:" + id })),
+    ], (entry) => entry.label, (entry) => entry.value);
+    field("restoreLast").disabled = !readStorage(draftKey, null);
+    field("restoreSaved").disabled = true;
+}
+
+async function restoreDraft(draft) {
+    if (!draft || animationBusy) return;
+    const generation = viewGeneration;
+    setAnimationBusy(true);
+    await finishSeek();
+    if (generation !== viewGeneration) return;
+    const scene = draft.scene || scenePayload();
+    const result = await postAndDebug("restoreSnapshot", {
+        ...draft, scene, props: Array.isArray(draft.props) ? draft.props : [],
+    });
+    if (generation !== viewGeneration) return;
+    setAnimationBusy(false);
+    if (!report(result)) return;
+
+    const animation = draft.animation || {};
+    setValue("animationId", draft.id);
+    setValue("animationLabel", draft.label);
+    setValue("animationPreset", "custom");
+    setValue("animDict", animation.dict);
+    setValue("animName", animation.anim);
+    setValue("animFlag", animation.flag ?? 0);
+    setValue("blendIn", animation.blendIn ?? 8);
+    setValue("blendOut", animation.blendOut ?? -8);
+    setValue("duration", animation.duration ?? -1);
+    setPlaybackRate(animation.playbackRate);
+    writeScene(scene);
+    setValue("output", "");
+    if (result.playbackError) report({ error: result.playbackError });
+    rememberDraft();
+}
+
+async function generateConfig() {
+    const revision = ++exportRevision;
+    await Promise.all(pendingTransforms.values());
+    if (revision !== exportRevision) return "";
+    const draft = snapshot();
+    const format = field("exportFormat").value;
+    const selectedOnly = field("exportScope").value === "selected";
+    const selected = editorProps.filter((prop) => !selectedOnly || prop.id === selectedId);
+    const props = selected.map(({ id, visible, ...prop }) => prop);
+    setValue("output", "");
+    feedback("", false, "exportFeedback");
+    if (!props.length && (selectedOnly || format === "values" || format === "native")) {
+        feedback(text("noProp"), true, "exportFeedback");
+        return "";
     }
 
-    return output.value;
+    const anim = draft.animation;
+    if (format === "scully" && (!draft.id || !anim.dict || !anim.anim)) {
+        feedback(text("scullyRequired"), true, "exportFeedback");
+        return "";
+    }
+
+    let rotations = [];
+    if (format === "scully" && props.length) {
+        const result = await post("scullyRotations", { ids: selected.map((prop) => prop.id) });
+        if (revision !== exportRevision || !report(result, "exportFeedback")) return "";
+        rotations = result.rotations;
+    }
+
+    const output = formatExport(format, draft, props, rotations);
+    setValue("output", output);
+    if (format === "scully") {
+        const file = text(props.length ? "scullyPropFile" : "scullyGeneralFile");
+        const approximated = ![0, 1, 50, 51].includes(anim.flag) || anim.playbackRate !== 1;
+        feedback(file + (approximated ? " " + text("scullyMapping") : ""), false, "exportFeedback");
+    }
+    addHistory(draft);
+    return output;
 }
 
 async function copyGeneratedConfig() {
     const output = document.getElementById("output");
-    const value = ensureGeneratedConfig();
+    const value = await generateConfig();
     let copied = false;
 
     if (!output || !value) {
-        addDebugLog(text("copyFailed", "Copy failed."));
         return;
     }
 
@@ -444,13 +668,103 @@ async function copyGeneratedConfig() {
     }
 
     window.getSelection?.().removeAllRanges?.();
-    addDebugLog(text(copied ? "copySuccess" : "copyFailed", copied ? "Copied." : "Copy failed."));
+    if (copied) {
+        const help = field("exportFeedback").textContent;
+        feedback((help ? help + " " : "") + text("copySuccess"), false, "exportFeedback");
+    } else feedback(text("copyFailed"), true, "exportFeedback");
 }
 
-function applyPropOffsets(reason) {
-    const payload = readPropPayload();
-    payload.reason = reason || "change";
-    return postAndDebug("updatePropOffsets", payload);
+async function applyPropOffsets(reason) {
+    if (!selectedId || currentGizmoActive) return;
+    const id = selectedId;
+    const payload = {
+        ...readPropPayload(), id,
+        revision: ++propRevision,
+        preserveRotation: field("preserveRotation").checked && reason !== "resetTransform",
+    };
+    exportRevision++;
+    const task = post("updatePropOffsets", payload).then((result) => {
+        if (pendingTransforms.get(id) !== task) return;
+        const index = editorProps.findIndex((prop) => prop.id === id);
+        if (index < 0) return;
+        if (!report(result, "propFeedback")) {
+            if (selectedId === id && ["bone", "rotationOrder"].includes(reason)) setupPropFields(editorProps[index]);
+            return;
+        }
+        editorProps[index] = {
+            ...editorProps[index], boneId: payload.boneId, offset: payload.offset,
+            rotation: result.rotation, rotationOrder: result.rotationOrder,
+        };
+        if (selectedId === id && reason === "rotationOrder") {
+            for (const axis of ["x", "y", "z"]) setValue("rot" + axis.toUpperCase(), result.rotation[axis].toFixed(5));
+        }
+        feedback("", false, "propFeedback");
+        renderBoneMarkers(lastMarkers);
+        rememberDraft();
+    }).finally(() => {
+        if (pendingTransforms.get(id) === task) pendingTransforms.delete(id);
+    });
+    pendingTransforms.set(id, task);
+    await task;
+}
+
+function setTestMode(active) {
+    testActive = active;
+    app.classList.toggle("is-testing", active);
+    field("testHint").classList.toggle("is-hidden", !active);
+    if (active) setPickerUi(false);
+}
+
+function setPickerUi(active) {
+    pickerActive = active;
+    field("pickBone").setAttribute("aria-pressed", String(active));
+    if (!active) renderBoneMarkers([]);
+}
+
+async function togglePicker(active) {
+    setPickerUi(active);
+    const result = await post("setBonePicker", { active, group: field("boneRegion").value });
+    if (!report(result, "propFeedback")) setPickerUi(false);
+}
+
+async function chooseBone(id) {
+    setValue("boneId", id);
+    syncBoneList();
+    await applyPropOffsets("bone");
+    if (pickerActive) await togglePicker(false);
+}
+
+function renderBoneMarkers(markers) {
+    lastMarkers = markers;
+    const visible = new Set();
+    if (pickerActive && !currentGizmoActive) {
+        for (const [index, marker] of markers.entries()) {
+            const bone = currentBones.find(({ id }) => id === marker.id);
+            if (!bone || !matchesBone(bone)) continue;
+            visible.add(marker.id);
+            let button = markerButtons.get(marker.id);
+            if (!button) {
+                button = document.createElement("button");
+                button.type = "button";
+                button.className = bone.finger ? "bone-marker is-finger" : "bone-marker";
+                button.title = boneLabel(bone) + " (" + bone.id + ")";
+                button.setAttribute("aria-label", button.title);
+                button.addEventListener("click", () => chooseBone(bone.id));
+                field("boneOverlay").appendChild(button);
+                markerButtons.set(marker.id, button);
+            }
+            button.style.left = marker.x * 100 + "%";
+            button.style.top = marker.y * 100 + "%";
+            button.style.zIndex = String(index + 1);
+            button.classList.toggle("is-selected", Number(field("boneId").value) === marker.id);
+        }
+    }
+    for (const [id, button] of markerButtons) {
+        if (!visible.has(id)) {
+            button.remove();
+            markerButtons.delete(id);
+        }
+    }
 }
 
 window.addEventListener("message", (event) => {
@@ -464,139 +778,201 @@ window.addEventListener("message", (event) => {
         }
     } else if (payload.action === "debugLog") {
         addDebugLog(payload.message || "");
-    } else if (payload.action === "animationTimeline") {
-        renderTimeline(payload.phase, payload.durationSeconds);
+    } else if (payload.action === "animationTimeline" && !app.classList.contains("is-hidden")) {
+        timelineClip = { dict: payload.dict, anim: payload.anim };
+        timelinePaused = payload.paused === true;
+        if (!timelineDragging) renderTimeline(payload.phase, payload.durationSeconds);
     } else if (payload.action === "setGizmoState") {
         currentGizmoActive = payload.active === true;
         updateStatus();
-    } else if (payload.action === "propStatus") {
-        updatePropStatus(payload.status);
-    } else if (payload.action === "updateOffsets") {
-        if (payload.offset) {
-            setValue("offsetX", Number(payload.offset.x || 0).toFixed(4));
-            setValue("offsetY", Number(payload.offset.y || 0).toFixed(4));
-            setValue("offsetZ", Number(payload.offset.z || 0).toFixed(4));
-        }
-        if (payload.rotation) {
-            setValue("rotX", Number(payload.rotation.x || 0).toFixed(2));
-            setValue("rotY", Number(payload.rotation.y || 0).toFixed(2));
-            setValue("rotZ", Number(payload.rotation.z || 0).toFixed(2));
+        updatePropControls();
+        if (currentGizmoActive) setPickerUi(false);
+    } else if (payload.action === "editorProps") {
+        receiveProps(payload);
+        exportRevision++;
+        if (payload.changed) rememberDraft();
+    } else if (payload.action === "boneMarkers" && (!payload.group || payload.group === field("boneRegion").value)) {
+        renderBoneMarkers(Array.isArray(payload.markers) ? payload.markers : []);
+    } else if (payload.action === "testMode") {
+        setTestMode(payload.active === true);
+    } else if (payload.action === "updateOffsets" && payload.id === selectedId) {
+        const prop = editorProps.find((item) => item.id === selectedId);
+        if (prop) {
+            prop.offset = payload.offset;
+            prop.rotation = payload.rotation;
+            setupPropFields(prop);
         }
     }
 });
 
-document.querySelectorAll("[data-action='close']").forEach((element) => {
-    element.addEventListener("click", () => postAndDebug("close"));
-});
-
+actionButton("close").onclick = () => postAndDebug("close");
 document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !currentGizmoActive) {
-        postAndDebug("close", { reason: "escape" });
-    }
+    if (event.key !== "Escape" || currentGizmoActive || testActive || app.classList.contains("is-hidden")) return;
+    if (pickerActive) togglePicker(false);
+    else postAndDebug("close");
 });
 
-const animationTimeline = document.getElementById("animationTimeline");
-if (animationTimeline) {
-    animationTimeline.addEventListener("pointerdown", () => {
-        timelineDragging = true;
-    });
-    animationTimeline.addEventListener("input", () => {
-        timelineDragging = true;
-        seekTimeline(Number(animationTimeline.value) / 1000, false);
-    });
-    animationTimeline.addEventListener("change", () => {
-        seekTimeline(Number(animationTimeline.value) / 1000, true);
-        timelineDragging = false;
-    });
-    animationTimeline.addEventListener("pointerup", () => {
-        seekTimeline(Number(animationTimeline.value) / 1000, true);
-        timelineDragging = false;
+for (const button of playbackButtons) {
+    button.addEventListener("click", () => setPlaybackRate(button.dataset.playbackRate, true));
+}
+playbackInput.addEventListener("change", () => setPlaybackRate(playbackInput.value, true));
+playbackInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") playbackInput.blur();
+});
+
+const animationTimeline = field("animationTimeline");
+animationTimeline.addEventListener("pointerdown", () => { timelineDragging = true; });
+animationTimeline.addEventListener("input", () => seekTimeline(Number(animationTimeline.value) / 1000));
+animationTimeline.addEventListener("change", () => seekTimeline(Number(animationTimeline.value) / 1000, true));
+animationTimeline.addEventListener("pointerup", () => { timelineDragging = false; });
+animationTimeline.addEventListener("pointercancel", () => { timelineDragging = false; });
+
+function finishSeek() {
+    clearTimeout(timelineSeekTimer);
+    return pendingSeek;
+}
+
+function setAnimationBusy(busy) {
+    animationBusy = busy;
+    actionButton("playAnimation").disabled = busy;
+    actionButton("pauseAnimation").disabled = busy;
+    field("testAnimation").disabled = busy;
+    renderTimeline(timelinePhase, currentTimelineDuration);
+}
+
+async function playEditor(action) {
+    if (animationBusy) return;
+    const generation = viewGeneration;
+    setAnimationBusy(true);
+    feedback("");
+    await finishSeek();
+    if (generation !== viewGeneration) return;
+    const result = await postAndDebug(action, readAnimationPayload());
+    if (generation !== viewGeneration) return;
+    setAnimationBusy(false);
+    if (report(result)) {
+        timelinePaused = false;
+        rememberDraft();
+    }
+}
+
+field("previousFrame").onclick = () => seekTimeline(timelinePhase - 0.05 / currentTimelineDuration, true);
+field("nextFrame").onclick = () => seekTimeline(timelinePhase + 0.05 / currentTimelineDuration, true);
+field("testAnimation").onclick = () => playEditor("testAnimation");
+actionButton("playAnimation").onclick = () => playEditor("playAnimation");
+actionButton("pauseAnimation").onclick = async () => {
+    await finishSeek();
+    if (report(await postAndDebug("pauseAnimation"))) rememberDraft();
+};
+actionButton("stopAnimation").onclick = async () => {
+    await finishSeek();
+    if (report(await postAndDebug("stopAnimation"))) rememberDraft();
+};
+actionButton("clearAll").onclick = async () => {
+    await finishSeek();
+    if (!report(await postAndDebug("stopAnimation"))) return;
+    setupAnimationFields({});
+    rememberDraft();
+};
+
+async function propAction(action, payload) {
+    await Promise.all(pendingTransforms.values());
+    const result = await postAndDebug(action, payload);
+    if (report(result, "propFeedback")) feedback("", false, "propFeedback");
+    return result;
+}
+
+actionButton("spawnProp").onclick = () => propAction("spawnProp", readPropPayload());
+field("replaceProp").onclick = () => propAction("spawnProp", { ...readPropPayload(), id: selectedId, replace: true });
+field("togglePropVisibility").onclick = () => propAction("togglePropVisibility", { id: selectedId });
+actionButton("deleteProp").onclick = () => propAction("deleteProp", { id: selectedId });
+field("attachedProp").onchange = (event) => propAction("selectProp", { id: Number(event.target.value) });
+actionButton("captureGizmo").onclick = () => propAction("captureGizmo");
+actionButton("toggleGizmo").onclick = () => propAction("toggleGizmo");
+actionButton("resetTransform").onclick = () => {
+    setupPropFields({ ...readPropPayload(), offset: currentDefaultProp.offset, rotation: currentDefaultProp.rotation });
+    applyPropOffsets("resetTransform");
+};
+
+actionButton("generate").onclick = generateConfig;
+actionButton("copyLua").onclick = copyGeneratedConfig;
+actionButton("saveConfig").onclick = async () => {
+    await Promise.all(pendingTransforms.values());
+    const draft = snapshot();
+    if (!draft.id) {
+        field("animationId").focus();
+        return feedback(text("animationIdRequired"), true, "exportFeedback");
+    }
+    const { id, label, animation, props } = draft;
+    const result = await postAndDebug("saveConfig", { id, label, animation, props });
+    if (report(result, "exportFeedback")) {
+        catalog[id] = { id, label, animation, props };
+        feedback(text("saveSuccess"), false, "exportFeedback");
+        addHistory(draft);
+    }
+};
+
+field("bonePreset").onchange = (event) => {
+    if (event.target.value !== "") chooseBone(Number(event.target.value));
+};
+field("boneSearch").oninput = () => {
+    syncBoneList();
+    renderBoneMarkers(lastMarkers);
+};
+field("boneRegion").onchange = () => {
+    syncBoneList();
+    renderBoneMarkers(lastMarkers);
+    if (pickerActive) togglePicker(true);
+};
+field("pickBone").onclick = () => togglePicker(!pickerActive);
+
+field("restoreLast").onclick = () => restoreDraft(readStorage(draftKey, null));
+field("refreshCatalog").onclick = async () => {
+    const result = await post("getCatalog");
+    if (report(result)) {
+        catalog = result.animations || {};
+        renderHistory();
+    }
+};
+field("savedAnimation").onchange = () => { field("restoreSaved").disabled = !field("savedAnimation").value; };
+field("restoreSaved").onclick = () => {
+    const [kind, id] = field("savedAnimation").value.split(":");
+    if (kind === "local") restoreDraft(recentEntries()[Number(id)]?.draft);
+    if (kind === "server") restoreDraft(catalog[id]);
+};
+
+for (const id of ["sceneBackdrop", "sceneColor", "sceneHour", "sceneWeather"]) {
+    field(id).addEventListener("input", async () => {
+        if (id === "sceneBackdrop" && field(id).value.startsWith("#")) setValue("sceneColor", field(id).value);
+        if (id === "sceneColor") setValue("sceneBackdrop", "custom");
+        if (report(await post("setScene", scenePayload()))) rememberDraft();
     });
 }
 
-document.querySelectorAll("[data-action='playAnimation']").forEach((element) => {
-    element.addEventListener("click", () => postAndDebug("playAnimation", readAnimationPayload()));
-});
+for (const id of ["exportFormat", "exportScope"]) {
+    field(id).onchange = () => {
+        exportRevision++;
+        setValue("output", "");
+        feedback("", false, "exportFeedback");
+    };
+}
 
-document.querySelectorAll("[data-action='pauseAnimation']").forEach((element) => {
-    element.addEventListener("click", () => postAndDebug("pauseAnimation"));
-});
-
-document.querySelectorAll("[data-action='stopAnimation']").forEach((element) => {
-    element.addEventListener("click", () => postAndDebug("stopAnimation"));
-});
-
-document.querySelectorAll("[data-action='clearAll']").forEach((element) => {
-    element.addEventListener("click", () => {
-        setupAnimationFields({});
-        postAndDebug("stopAnimation", { reason: "clearAll" });
-    });
-});
-
-document.querySelectorAll("[data-action='spawnProp']").forEach((element) => {
-    element.addEventListener("click", async () => {
-        const result = await postAndDebug("spawnProp", readPropPayload());
-        updatePropStatus(result && result.ok ? "attached" : "none");
-    });
-});
-
-document.querySelectorAll("[data-action='deleteProp']").forEach((element) => {
-    element.addEventListener("click", async () => {
-        await postAndDebug("deleteProp");
-        updatePropStatus("none");
-    });
-});
-
-document.querySelectorAll("[data-action='toggleGizmo']").forEach((element) => {
-    element.addEventListener("click", () => postAndDebug("toggleGizmo", { active: !currentGizmoActive }));
-});
-
-document.querySelectorAll("[data-action='captureGizmo']").forEach((element) => {
-    element.addEventListener("click", () => postAndDebug("captureGizmo"));
-});
-
-document.querySelectorAll("[data-action='resetTransform']").forEach((element) => {
-    element.addEventListener("click", () => {
-        setupPropFields(currentDefaultProp);
-        applyPropOffsets("resetTransform");
-    });
-});
-
-document.querySelectorAll("[data-action='generate']").forEach((element) => {
-    element.addEventListener("click", generateLuaConfig);
-});
-
-document.querySelectorAll("[data-action='copyLua']").forEach((element) => {
-    element.addEventListener("click", copyGeneratedConfig);
-});
-
-document.querySelectorAll("[data-action='saveConfig']").forEach((element) => {
-    element.addEventListener("click", async () => {
-        const id = readAnimationId();
-        const idInput = document.getElementById("animationId");
-        if (!id) {
-            idInput?.focus();
-            addDebugLog(text("animationIdRequired", "Enter a valid ID before saving."));
-            return;
-        }
-
-        generateLuaConfig();
-        const prop = readPropPayload();
-        const result = await postAndDebug("saveConfig", {
-            id,
-            animation: readAnimationPayload(),
-            props: prop.model ? [prop] : [],
-        });
-
-        addDebugLog(text(result?.ok ? "saveSuccess" : "saveFailed", result?.ok ? "Config saved." : "Save failed."));
-    });
+app.addEventListener("input", (event) => {
+    if (["output", "animationTimeline", "boneSearch", "boneRegion", "savedAnimation", "exportFormat", "exportScope"].includes(event.target.id)) return;
+    exportRevision++;
+    queueDraft();
 });
 
 document.querySelectorAll(".camera-target-btn").forEach((button) => {
     button.addEventListener("click", () => {
         document.querySelectorAll(".camera-target-btn").forEach((item) => item.classList.remove("active"));
         button.classList.add("active");
-        postAndDebug("changeCameraTarget", { target: button.dataset.target });
+        const target = button.dataset.target;
+        if (target.endsWith("Hand")) {
+            setValue("boneRegion", target);
+            field("boneRegion").onchange();
+        }
+        postAndDebug("changeCameraTarget", { target });
     });
 });
 
@@ -624,8 +1000,11 @@ document.querySelectorAll(".axis-grid button").forEach((button) => {
 
 ["offsetX", "offsetY", "offsetZ", "rotX", "rotY", "rotZ", "boneId", "rotationOrder"].forEach((id) => {
     const element = document.getElementById(id);
-    element?.addEventListener("input", () => applyPropOffsets(`input:${id}`));
-    element?.addEventListener("change", () => applyPropOffsets(`change:${id}`));
+    const changeOnly = id === "boneId" || id === "rotationOrder";
+    element?.addEventListener(changeOnly ? "change" : "input", () => {
+        if (id === "boneId") syncBoneList();
+        applyPropOffsets(id === "boneId" ? "bone" : id);
+    });
 });
 
 document.getElementById("propModel")?.addEventListener("input", () => {

@@ -294,6 +294,18 @@ button:active {
     grid-template-columns: 1fr;
 }
 
+.playback-presets {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.playback-presets button[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
 .timeline-box {
     margin: 12px 0;
     padding: 11px 12px;
@@ -537,3 +549,72 @@ button:active {
         width: 100%;
     }
 }
+.editor-section {
+    margin-bottom: 12px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+}
+
+.editor-section summary { cursor: pointer; font-size: 13px; font-weight: 700; }
+.editor-section[open] summary { margin-bottom: 10px; }
+
+.paired-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 8px 0 12px;
+}
+.paired-actions button,
+.animation-actions button,
+.bone-controls button { padding: 6px; font-size: 12px; line-height: 1.25; overflow-wrap: anywhere; }
+#testAnimation { grid-column: 1 / -1; }
+
+.bone-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(94px, 40%);
+    align-items: end;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.bone-controls label { margin: 0; }
+#pickBone[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.check-field { flex-direction: row; align-items: center; }
+.check-field input { min-height: auto; width: auto; accent-color: var(--accent); }
+
+.editor-feedback { display: block; margin: 6px 0; color: var(--muted); font-size: 12px; }
+.editor-feedback:empty { display: none; }
+.editor-feedback.is-error { color: #ffabab; }
+
+.bone-overlay { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.bone-marker {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    width: 16px;
+    height: 16px;
+    min-height: 0;
+    padding: 0;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #20252b;
+    pointer-events: auto;
+}
+.bone-marker.is-finger { width: 10px; height: 10px; border-width: 1px; }
+.bone-marker:hover, .bone-marker:focus-visible, .bone-marker.is-selected { background: var(--accent); border-color: #fff; }
+
+.test-hint {
+    position: absolute;
+    bottom: 5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 90vw;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg-strong);
+}
+.app.is-testing .panel, .app.is-testing .camera-target-container, .app.is-testing .bone-overlay { display: none; }
+.camera-target-btn[data-target$="Hand"] { padding: 0 4px; font-size: 11px; font-weight: 700; }
+button:disabled { opacity: 0.5; cursor: default; }

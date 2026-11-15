@@ -9,6 +9,8 @@
 </head>
 <body>
     <main id="app" class="app is-hidden">
+        <div id="boneOverlay" class="bone-overlay"></div>
+        <output id="testHint" class="test-hint is-hidden" data-i18n="testHint"></output>
         <section class="panel panel-left">
             <header class="panel-header">
                 <div>
@@ -23,6 +25,24 @@
                 <input id="animationId" spellcheck="false" maxlength="64" placeholder="garrafa_dagua" required>
                 <small class="field-hint" data-i18n="animationIdHint"></small>
             </label>
+
+            <label class="field">
+                <span data-i18n="animationLabel"></span>
+                <input id="animationLabel" maxlength="100">
+            </label>
+
+            <details class="editor-section">
+                <summary data-i18n="history"></summary>
+                <div class="paired-actions">
+                    <button type="button" id="restoreLast" data-i18n="restoreLast"></button>
+                    <button type="button" id="refreshCatalog" data-i18n="refreshCatalog"></button>
+                </div>
+                <label class="field">
+                    <span data-i18n="savedAnimations"></span>
+                    <select id="savedAnimation"></select>
+                </label>
+                <button type="button" id="restoreSaved" data-i18n="restoreSaved"></button>
+            </details>
 
             <div class="field">
                 <label for="animationPreset" data-i18n="preset"></label>
@@ -62,8 +82,14 @@
                 </label>
                 <label class="field">
                     <span data-i18n="playback"></span>
-                    <input id="playbackRate" type="number" step="0.05">
+                    <input id="playbackRate" type="text" inputmode="decimal" value="1" spellcheck="false">
                 </label>
+            </div>
+
+            <div class="playback-presets">
+                <button type="button" class="small" data-playback-rate="0.5" aria-pressed="false">0.5×</button>
+                <button type="button" class="small" data-playback-rate="1" aria-pressed="true">1×</button>
+                <button type="button" class="small" data-playback-rate="1.5" aria-pressed="false">1.5×</button>
             </div>
 
             <div class="field">
@@ -84,8 +110,50 @@
                     <output id="timelineValue">00:00.00 / 00:00.00</output>
                 </div>
                 <input id="animationTimeline" class="timeline-range" type="range" min="0" max="1000" step="1" value="0">
+                <div class="paired-actions timeline-actions">
+                    <button type="button" id="previousFrame" data-i18n-title="frameBack">−0.05 s</button>
+                    <button type="button" id="nextFrame" data-i18n-title="frameForward">+0.05 s</button>
+                    <button type="button" id="testAnimation" data-i18n="testAnimation"></button>
+                </div>
                 <small data-i18n="timelineHint"></small>
+                <output id="editorFeedback" class="editor-feedback" aria-live="polite"></output>
             </div>
+
+            <details class="editor-section">
+                <summary data-i18n="scene"></summary>
+                <div class="grid grid-2">
+                    <label class="field">
+                        <span data-i18n="background"></span>
+                        <select id="sceneBackdrop">
+                            <option value="" data-i18n="worldScene"></option>
+                            <option value="#24c848" data-i18n="greenScene"></option>
+                            <option value="#275fea" data-i18n="blueScene"></option>
+                            <option value="#626875" data-i18n="neutralScene"></option>
+                            <option value="custom" data-i18n="custom"></option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span data-i18n="backgroundColor"></span>
+                        <input id="sceneColor" type="color" value="#24c848">
+                    </label>
+                    <label class="field">
+                        <span data-i18n="sceneHour"></span>
+                        <input id="sceneHour" type="number" min="0" max="23" placeholder="0–23">
+                    </label>
+                    <label class="field">
+                        <span data-i18n="sceneWeather"></span>
+                        <select id="sceneWeather">
+                            <option value="" data-i18n="worldScene"></option>
+                            <option value="EXTRASUNNY" data-i18n="sunny"></option>
+                            <option value="CLEAR" data-i18n="clearSky"></option>
+                            <option value="CLOUDS" data-i18n="clouds"></option>
+                            <option value="OVERCAST" data-i18n="overcast"></option>
+                            <option value="RAIN" data-i18n="rain"></option>
+                            <option value="FOGGY" data-i18n="fog"></option>
+                        </select>
+                    </label>
+                </div>
+            </details>
 
             <div class="export-box">
                 <div class="export-head">
@@ -95,6 +163,26 @@
                         <button class="small" data-action="copyLua" data-i18n="copy"></button>
                     </div>
                 </div>
+                <div class="grid grid-2">
+                    <label class="field">
+                        <span data-i18n="exportFormat"></span>
+                        <select id="exportFormat">
+                            <option value="lua">Lua</option>
+                            <option value="json">JSON</option>
+                            <option value="native">AttachEntityToEntity</option>
+                            <option value="values" data-i18n="exportValues"></option>
+                            <option value="scully">Scully Emote Menu</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span data-i18n="exportScope"></span>
+                        <select id="exportScope">
+                            <option value="all" data-i18n="allProps"></option>
+                            <option value="selected" data-i18n="selectedProp"></option>
+                        </select>
+                    </label>
+                </div>
+                <output id="exportFeedback" class="editor-feedback" aria-live="polite"></output>
                 <textarea id="output" spellcheck="false" readonly></textarea>
                 <button class="full" data-action="saveConfig" data-i18n="saveJson"></button>
             </div>
@@ -115,6 +203,8 @@
             <button class="camera-target-btn" data-target="foot" data-i18n-title="camFoot">
                 <i class="fa-solid fa-shoe-prints"></i>
             </button>
+            <button class="camera-target-btn" data-target="leftHand" data-i18n-title="leftHandBones" data-i18n="leftHandShort"></button>
+            <button class="camera-target-btn" data-target="rightHand" data-i18n-title="rightHandBones" data-i18n="rightHandShort"></button>
         </div>
 
         <section class="panel panel-right">
@@ -126,6 +216,10 @@
                 <button id="gizmoState" class="status-pill"></button>
             </header>
 
+            <label class="field">
+                <span data-i18n="attachedProps"></span>
+                <select id="attachedProp"></select>
+            </label>
             <div class="field">
                 <label for="propPreset" data-i18n="prop"></label>
                 <select id="propPreset"></select>
@@ -136,9 +230,29 @@
                 <input id="propModel" spellcheck="false" placeholder="prop_cs_burger_01">
             </div>
 
-            <div class="actions">
-                <button class="primary" data-action="spawnProp" data-i18n="spawn"></button>
+            <div class="paired-actions">
+                <button class="primary" data-action="spawnProp" data-i18n="addProp"></button>
+                <button id="replaceProp" data-i18n="replaceProp"></button>
+                <button id="togglePropVisibility" data-i18n="hideProp"></button>
                 <button data-action="deleteProp" data-i18n="delete"></button>
+            </div>
+            <output id="propFeedback" class="editor-feedback" aria-live="polite"></output>
+
+            <label class="field">
+                <span data-i18n="boneRegion"></span>
+                <select id="boneRegion">
+                    <option value="body" data-i18n="bodyBones"></option>
+                    <option value="leftHand" data-i18n="leftHandBones"></option>
+                    <option value="rightHand" data-i18n="rightHandBones"></option>
+                    <option value="all" data-i18n="allBones"></option>
+                </select>
+            </label>
+            <div class="bone-controls">
+                <label class="field">
+                    <span data-i18n="searchBone"></span>
+                    <input id="boneSearch" type="search" spellcheck="false">
+                </label>
+                <button id="pickBone" aria-pressed="false" data-i18n="pickBone"></button>
             </div>
 
             <div class="grid grid-2">
@@ -163,6 +277,11 @@
                     <option value="5">5</option>
                 </select>
             </div>
+
+            <label class="field check-field">
+                <input id="preserveRotation" type="checkbox" checked>
+                <span data-i18n="preserveRotation"></span>
+            </label>
 
             <div class="coords">
                 <div class="coords-head">
@@ -211,6 +330,6 @@
             </footer>
         </section>
     </main>
-    <script src="main.js"></script>
+    <script type="module" src="main.js"></script>
 </body>
 </html>

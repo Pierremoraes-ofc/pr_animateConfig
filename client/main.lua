@@ -981,7 +981,35 @@ local function updateScene(data)
     applySceneWeather()
 end
 
-local function drawBackdrop(ped)
+local function drawChromaQuad(a, b, c, d)
+    DrawPoly(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, scene.r, scene.g, scene.b, 255)
+    DrawPoly(a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z, scene.r, scene.g, scene.b, 255)
+end
+
+local function sampleChromaFloor(ped, position)
+    local found, height, normal = GetGroundZAndNormalFor_3dCoord(position.x, position.y, position.z + 0.5)
+    local slopeX, slopeY = 0.0, 0.0
+    if found then
+        if normal.z > 0.5 then
+            slopeX, slopeY = -normal.x / normal.z, -normal.y / normal.z
+        end
+    else
+        height = position.z - GetEntityHeightAboveGround(ped)
+    end
+
+    -- Offset the surface slightly above the terrain to avoid overlapping pixels.
+    local extent = 32.0
+    local function vertex(x, y)
+        return vector3(position.x + x, position.y + y, height + 0.025 + slopeX * x + slopeY * y)
+    end
+
+    return {
+        vertex(-extent, -extent), vertex(extent, -extent),
+        vertex(extent, extent), vertex(-extent, extent),
+    }
+end
+
+local function drawBackdrop(position)
     local camera = GetFinalRenderedCamCoord()
     local rotation = GetFinalRenderedCamRot(2)
     local pitch, yaw = math.rad(rotation.x), math.rad(rotation.z)
@@ -990,7 +1018,7 @@ local function drawBackdrop(ped)
     local forward = vector3(-sinYaw * cosPitch, cosYaw * cosPitch, sinPitch)
     local right = vector3(cosYaw, sinYaw, 0.0)
     local up = vector3(sinYaw * sinPitch, -cosYaw * sinPitch, cosPitch)
-    local delta = GetEntityCoords(ped) + vector3(0.0, 0.0, 0.85) - camera
+    local delta = position + vector3(0.0, 0.0, 0.85) - camera
     local depth = math.max(2.0, delta.x * forward.x + delta.y * forward.y + delta.z * forward.z + 1.8)
     local center = camera + forward * depth
     local halfHeight = depth * math.tan(math.rad(GetFinalRenderedCamFov()) * 0.5) * 1.08
@@ -998,25 +1026,38 @@ local function drawBackdrop(ped)
     local vertical = up * halfHeight
     local a, b = center - horizontal + vertical, center - horizontal - vertical
     local c, d = center + horizontal - vertical, center + horizontal + vertical
-    DrawPoly(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, scene.r, scene.g, scene.b, 255)
-    DrawPoly(a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z, scene.r, scene.g, scene.b, 255)
+    drawChromaQuad(a, b, c, d)
 end
 
 local function startSceneThread()
     local session = editorSession
     CreateThread(function()
-        local updateWeatherAt = 0
+        local updateWeatherAt, updateFloorAt = 0, 0
+        local floor, floorPed
         while isOpen and session == editorSession do
-            if not movementTesting then
-                local now = GetGameTimer()
-                if (scene.hour or scene.weather) and now >= updateWeatherAt then
-                    applySceneWeather()
-                    updateWeatherAt = now + 500
-                end
-                local ped = PlayerPedId()
-                if scene.backdrop and DoesEntityExist(ped) then drawBackdrop(ped) end
+            local backdropVisible = scene.backdrop and not movementTesting
+            local now = GetGameTimer()
+            if not movementTesting and (scene.hour or scene.weather) and now >= updateWeatherAt then
+                applySceneWeather()
+                updateWeatherAt = now + 500
             end
-            Wait(scene.backdrop and not movementTesting and 0 or 100)
+
+            if backdropVisible then
+                local ped = PlayerPedId()
+                if DoesEntityExist(ped) then
+                    local position = GetEntityCoords(ped)
+                    if not floor or floorPed ~= ped or now >= updateFloorAt then
+                        floor = sampleChromaFloor(ped, position)
+                        floorPed, updateFloorAt = ped, now + 250
+                    end
+
+                    drawChromaQuad(floor[1], floor[2], floor[3], floor[4])
+                    drawBackdrop(position)
+                end
+            else
+                floor = nil
+            end
+            Wait(backdropVisible and 0 or 100)
         end
     end)
 end

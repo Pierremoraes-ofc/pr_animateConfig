@@ -1,36 +1,98 @@
 {
     "version": 2,
     "animations": {
-        "garrafa_daguar": {
-            "createdAt": "2026-08-29T16:24:09Z",
+        "cafe_copodepapel": {
+            "id": "cafe_copodepapel",
             "animation": {
-                "playbackRate": 1,
-                "anim": "loop_bottle",
-                "flag": 49,
                 "duration": -1,
-                "blendOut": -8,
+                "anim": "loop_bottle",
+                "playbackRate": 1,
                 "dict": "mp_player_intdrink",
+                "flag": 49,
+                "blendOut": -8,
                 "blendIn": 8
             },
-            "id": "garrafa_daguar",
-            "updatedAt": "2026-08-29T16:24:09Z",
+            "createdAt": "2026-11-16T00:26:11Z",
+            "updatedAt": "2026-11-16T00:26:11Z",
             "props": [
                 {
-                    "boneId": 18905,
                     "rotation": {
-                        "z": 10,
-                        "y": 0,
-                        "x": -80
+                        "y": 17.68782806396484,
+                        "z": 10.00016689300537,
+                        "x": 32.03341293334961
                     },
-                    "model": "prop_ld_flow_bottle",
                     "offset": {
-                        "z": -0.02,
-                        "y": 0.02,
-                        "x": 0.12
+                        "y": -0.04813813790678,
+                        "z": -0.01481715869158,
+                        "x": 0.03358273208141
                     },
-                    "rotationOrder": 2
+                    "boneId": 26612,
+                    "rotationOrder": 2,
+                    "model": "p_amb_coffeecup_01"
                 }
             ]
+        },
+        "garrafa_daguar": {
+            "id": "garrafa_daguar",
+            "props": [
+                {
+                    "rotation": {
+                        "y": 0,
+                        "z": 10,
+                        "x": -80
+                    },
+                    "offset": {
+                        "y": 0.02,
+                        "z": -0.02,
+                        "x": 0.12
+                    },
+                    "boneId": 18905,
+                    "rotationOrder": 2,
+                    "model": "prop_ld_flow_bottle"
+                }
+            ],
+            "createdAt": "2026-08-29T16:24:09Z",
+            "updatedAt": "2026-08-29T16:24:09Z",
+            "animation": {
+                "duration": -1,
+                "blendOut": -8,
+                "blendIn": 8,
+                "dict": "mp_player_intdrink",
+                "playbackRate": 1,
+                "anim": "loop_bottle",
+                "flag": 49
+            }
+        },
+        "beer2": {
+            "id": "beer2",
+            "props": [
+                {
+                    "rotation": {
+                        "y": -0.00004670841735,
+                        "z": 9.99995517730712,
+                        "x": -80.00004577636719
+                    },
+                    "offset": {
+                        "y": 0.02000315487384,
+                        "z": -0.0199997536838,
+                        "x": 0.11999756842851
+                    },
+                    "boneId": 57005,
+                    "rotationOrder": 2,
+                    "model": "prop_amb_beer_bottle"
+                }
+            ],
+            "createdAt": "2026-11-15T20:58:45Z",
+            "updatedAt": "2026-11-15T20:58:45Z",
+            "animation": {
+                "duration": -1,
+                "blendOut": -8,
+                "blendIn": 8,
+                "dict": "amb@world_human_drinking@beer@male@idle_a",
+                "playbackRate": 1,
+                "anim": "idle_c",
+                "flag": 49
+            }
         }
     }
 }

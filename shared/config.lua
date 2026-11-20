@@ -1,3 +1,5 @@
+VersionCheck = true
+
 Config = Config or {}
 
 Config.Language = "pt-br"

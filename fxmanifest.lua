@@ -3,13 +3,12 @@ game("gta5")
 
 author("Forge Devs - PierreMoraes")
 description("Sistema de posicionamento de animacao com prop")
-version("1.2.5")
+version("1.2.7")
 lua54("yes")
 
 shared_scripts({
 	"@pr_bridge/init.lua",
 	"shared/config.lua",
-	"server/version.lua",
 })
 
 client_scripts({
